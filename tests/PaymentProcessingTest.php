@@ -149,7 +149,7 @@ final class PaymentProcessingTest extends TestCase
                     }
 
                     return $session;
-                }
+                },
             )
         ;
         $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($client, $this->settings), $this->settings, [$this->resolver], new NullLogger());
