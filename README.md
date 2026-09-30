@@ -4,7 +4,7 @@
 
 ## Installation und Einrichtung
 
-Das Paket im Contao Manager gemeinsam mit dem Mini-Shop installieren oder über Composer einbinden. Solange noch kein Remote besteht, ein Composer-Path-Repository auf dieses Verzeichnis verwenden. `make artifact VERSION=0.1.0` erstellt ein Manager-ZIP mit einem Composer-Manifest im Archivwurzelverzeichnis. Es werden keine Tags oder Remotes angelegt.
+Das Paket im Contao Manager gemeinsam mit dem Mini-Shop installieren oder über Composer einbinden. Solange noch kein Remote besteht, ein Composer-Path-Repository auf dieses Verzeichnis verwenden. `make artifact VERSION=1.0.0-dev` erstellt ein Manager-ZIP mit einem Composer-Manifest im Archivwurzelverzeichnis. Es werden keine Tags oder Remotes angelegt.
 
 Unter **Inhalte → Zahlung einrichten** Vorkasse und/oder Stripe einschalten. Vorkasse ist voreingestellt. Für Stripe zuerst den Testmodus wählen, den passenden Test-Schlüssel eintragen und speichern. Danach **Webhook bei Stripe anlegen** ausführen. Das zurückgegebene Webhook-Secret wird verschlüsselt gespeichert. Alternativ ein bereits vorhandenes Webhook-Secret eintragen. Für Livebetrieb benötigt die Website HTTPS und einen öffentlich erreichbaren Webhook.
 
@@ -31,7 +31,7 @@ Docker: PHP 8.3-FPM, Caddy auf 8084, MariaDB auf tmpfs, Mailpit auf 8029 und Fak
 ```sh
 make reset
 make check
-make artifact VERSION=0.1.0
+make artifact VERSION=1.0.0-dev
 ```
 
 Playwright wird mit `vp` betrieben. `make check` prüft Paketexport, ECS, Twig-CS-Fixer, Composer, Container, PHPStan, PHPUnit und Browserabläufe. Die CI erzeugt lokale Zugangsdaten und korrigiert nach dem Reset die Schreibrechte für PHP-FPM.
