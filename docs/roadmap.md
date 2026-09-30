@@ -2,14 +2,14 @@
 
 ## P1 — Zahlungsnaht und Stripe
 
-- [ ] Bundle, Geldobjekte, neutrale Anbieter- und Resolver-Schnittstellen.
-- [ ] Daten, Statusmaschine, unveränderliches Audit, Idempotenz und signierter stateless Webhook.
-- [ ] Vorkasse, Stripe Checkout und Rückkehrseite ohne JavaScript.
-- [ ] Contao-Cron für Zahlungen älter als zehn Minuten.
-- [ ] Native Backend-Liste und Einrichtung in Hell/Dunkel, verschlüsselte Schlüssel, API-Webhook-Anlage.
-- [ ] Voll- und Teilerstattung mit API- und Formular-Idempotenz.
-- [ ] Lokaler Fake-Stripe, PHPUnit, Playwright, CI und Manager-Artefakt.
-- [ ] Mini-Shop angebunden und Integration mit Seminar/Widerruf weiterhin grün.
+- [x] Bundle, Geldobjekte, neutrale Anbieter- und Resolver-Schnittstellen.
+- [x] Daten, Statusmaschine, unveränderliches Audit, Idempotenz und signierter stateless Webhook.
+- [x] Vorkasse, Stripe Checkout und Rückkehrseite ohne JavaScript.
+- [x] Contao-Cron für Zahlungen älter als zehn Minuten.
+- [x] Native Backend-Liste und Einrichtung in Hell/Dunkel, verschlüsselte Schlüssel, API-Webhook-Anlage.
+- [x] Voll- und Teilerstattung mit API- und Formular-Idempotenz.
+- [x] Lokaler Fake-Stripe, PHPUnit, Playwright, CI und Manager-Artefakt.
+- [x] Mini-Shop angebunden und Integration mit Seminar/Widerruf weiterhin grün.
 
 ## Offene Produktentscheidungen
 
@@ -23,3 +23,5 @@
 
 - [ ] Echter Stripe-Testmodus in öffentlich erreichbarer HTTPS-Testinstallation, insbesondere verzögerte Zahlarten.
 - [ ] Fachliche Freigabe gemischter Steuer-Teilerstattungen und der genannten Status-/Widerrufsentscheidungen.
+
+Prüfung am 30.09.2026: Payment `make reset && make check`, 12 PHPUnit-Tests / 47 Assertions und ein Playwright-Test; Shop 63 PHPUnit-Tests / 260 Assertions und 29 Playwright-Tests; gemeinsame Integration 16 Browser-Tests. Echter Stripe-Test wurde nicht gestartet.
