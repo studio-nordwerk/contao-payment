@@ -36,7 +36,7 @@ jobs:
       - name: Allow PHP-FPM to write runtime files
         run: docker compose exec -T php sh -c "chown -R www-data:www-data /workspace/app/var /workspace/app/assets"
       - name: Verify return page
-        run: curl --fail --silent --show-error http://127.0.0.1:8084/_nw/payment/return/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | rg 'Zahlung wird geprüft'
+        run: curl --fail --silent --show-error http://127.0.0.1:8084/_nw/payment/return/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | grep -q 'Zahlung wird geprüft'
       - name: Install browser system libraries
         run: vp exec playwright install --with-deps chromium
       - name: Check
