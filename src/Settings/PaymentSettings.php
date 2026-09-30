@@ -63,27 +63,43 @@ final readonly class PaymentSettings
 
     public function save(bool $bank, bool $stripe, bool $test, string $key, string $webhook): void
     {
-        $data = $this->stored();
-        $oldTest = (bool) ($data['testMode'] ?? true);
-        if ($oldTest !== $test && ('' === $key || '' === $webhook)) {
-            throw new \InvalidArgumentException('Beim Moduswechsel beide Schlüssel neu eintragen.');
-        }
-        if ('' !== $key && !preg_match($test ? '/^(sk|rk)_test_/' : '/^(sk|rk)_live_/', $key)) {
-            throw new \InvalidArgumentException('Stripe-Schlüssel passt nicht zum Testmodus.');
-        }
-        if ('' !== $webhook && !str_starts_with($webhook, 'whsec_')) {
-            throw new \InvalidArgumentException('Ungültiges Webhook-Secret.');
-        }
-        $data['bankEnabled'] = $bank;
-        $data['stripeEnabled'] = $stripe;
-        $data['testMode'] = $test;
+        $this->connection->transactional(
+            function () use ($bank, $stripe, $test, $key, $webhook): void {
+                $data = $this->lockedData();
+                $oldTest = (bool) ($data['testMode'] ?? true);
+                if ($oldTest !== $test && '' === $key) {
+                    throw new \InvalidArgumentException('Beim Moduswechsel den passenden Stripe-Schlüssel neu eintragen.');
+                }
+                if ('' !== $key && !preg_match($test ? '/^(sk|rk)_test_/' : '/^(sk|rk)_live_/', $key)) {
+                    throw new \InvalidArgumentException('Stripe-Schlüssel passt nicht zum Testmodus.');
+                }
+                if ('' !== $webhook && !str_starts_with($webhook, 'whsec_')) {
+                    throw new \InvalidArgumentException('Ungültiges Webhook-Secret.');
+                }
 
-        foreach (['secretKey' => $key, 'webhookSecret' => $webhook] as $field => $value) {
-            if ('' !== $value) {
-                $data[$field] = $this->cipher->encrypt($value);
-            }
-        }
-        $this->persist($data);
+                try {
+                    $oldKey = isset($data['secretKey']) ? $this->cipher->decrypt((string) $data['secretKey']) : '';
+                } catch (\RuntimeException) {
+                    $oldKey = '';
+                }
+                if ($oldTest !== $test || ('' !== $key && $oldKey !== $key)) {
+                    unset($data['secretKey'], $data['webhookSecret'], $data['endpointId'], $data['webhookIdentity'], $data['webhookOperation']);
+                }
+                $data['bankEnabled'] = $bank;
+                $data['stripeEnabled'] = $stripe;
+                $data['testMode'] = $test;
+
+                foreach (['secretKey' => $key, 'webhookSecret' => $webhook] as $field => $value) {
+                    if ('' !== $value) {
+                        $data[$field] = $this->cipher->encrypt($value);
+                    }
+                }
+                if ($stripe && ('' === ($data['secretKey'] ?? '') || '' === ($data['webhookSecret'] ?? ''))) {
+                    throw new \InvalidArgumentException('Stripe zunächst ausgeschaltet speichern, dann Webhook anlegen und Stripe einschalten.');
+                }
+                $this->persist($data);
+            },
+        );
     }
 
     public function prepareWebhook(string $url): void
@@ -147,13 +163,17 @@ final readonly class PaymentSettings
         $data = $this->stored();
 
         try {
+            $this->secretKey();
+            $this->webhookSecret();
             if (($data['stripeEnabled'] ?? false) && !$this->enabled('stripe')) {
                 return ['Zahlung: Stripe-Schlüssel und Webhook-Secret ergänzen'];
             }
             if (!$this->enabled('bank_transfer') && !$this->enabled('stripe')) {
                 return ['Zahlung: mindestens einen Anbieter einrichten'];
             }
-        } catch (\InvalidArgumentException|\RuntimeException) {
+        } catch (\RuntimeException) {
+            return ['Zahlung: Stripe-Schlüssel neu eingeben'];
+        } catch (\InvalidArgumentException) {
             return ['Zahlung: Stripe-Schlüssel oder Testmodus prüfen'];
         }
 

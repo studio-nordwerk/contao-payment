@@ -13,3 +13,5 @@
         <div class="widget"><h3><label for="webhookSecret">Webhook-Secret</label></h3><input class="tl_text" type="password" id="webhookSecret" name="webhookSecret" autocomplete="new-password" value=""><p class="tl_help">Leer lassen, um das gespeicherte Secret zu behalten.</p></div>
     </fieldset></div><div class="tl_formbody_submit"><div class="tl_submit_container"><button class="tl_submit" name="action" value="save" type="submit">Speichern</button><button class="tl_submit" name="action" value="webhook" type="submit">Webhook bei Stripe anlegen</button></div></div>
 </form>
+
+<p>Einrichtung und Moduswechsel: Stripe ausschalten, Modus und passenden Stripe-Schlüssel speichern, Webhook anlegen, anschließend Stripe einschalten. Ausstehende Zahlungen und Webhook-Zustellungen vor einem Wechsel abschließen.</p>
