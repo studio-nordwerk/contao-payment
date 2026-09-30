@@ -1,0 +1,47 @@
+{
+  "name": "nordwerk/payment-demo",
+  "type": "project",
+  "require": {
+    "php": "^8.3",
+    "contao/managed-edition": "5.7.*",
+    "nordwerk/contao-payment-bundle": "@dev"
+  },
+  "require-dev": {
+    "contao/easy-coding-standard": "^7.1",
+    "phpstan/phpstan": "^2.0",
+    "phpunit/phpunit": "^11.0",
+    "vincentlanglet/twig-cs-fixer": "^3.0",
+    "ergebnis/composer-normalize": "^2.0"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../",
+      "options": {
+        "symlink": true,
+        "reference": "none"
+      }
+    }
+  ],
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "config": {
+    "allow-plugins": {
+      "contao-components/installer": true,
+      "contao/manager-plugin": true,
+      "dealerdirect/phpcodesniffer-composer-installer": true,
+      "ergebnis/composer-normalize": true
+    }
+  },
+  "scripts": {
+    "post-install-cmd": [
+      "@php vendor/bin/contao-setup"
+    ],
+    "post-update-cmd": [
+      "@php vendor/bin/contao-setup"
+    ]
+  },
+  "extra": {
+    "contao-component-dir": "assets"
+  }
+}

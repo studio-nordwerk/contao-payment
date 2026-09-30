@@ -1,0 +1,56 @@
+name: nordwerk-payment
+services:
+  php:
+    build: ./docker/php
+    working_dir: /workspace/app
+    volumes:
+      - .:/workspace
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      APP_SECRET: ${APP_SECRET:-change-me-too}
+      DATABASE_URL: mysql://contao:contao@db:3306/contao?serverVersion=mariadb-11.8.9&charset=utf8mb4
+      MAILER_DSN: smtp://mailpit:1025
+      NW_PAYMENT_STRIPE_API_BASE: http://fake-stripe:8080
+      CONTAO_ADMIN_EMAIL: ${CONTAO_ADMIN_EMAIL:-admin@example.test}
+      CONTAO_ADMIN_PASSWORD: ${CONTAO_ADMIN_PASSWORD:-change-me}
+    depends_on:
+      db:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+  fake-stripe:
+    image: python:3.13-alpine
+    command: python /fixture/server.py
+    volumes:
+      - ./docker/fake-stripe:/fixture:ro
+    environment:
+      FAKE_STRIPE_PUBLIC_URL: http://127.0.0.1:8095
+    ports:
+      - "127.0.0.1:8095:8080"
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8084:80"
+    volumes:
+      - .:/workspace:ro
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - php
+  db:
+    image: mariadb:11.8.9
+    environment:
+      MARIADB_DATABASE: contao
+      MARIADB_USER: contao
+      MARIADB_PASSWORD: contao
+      MARIADB_ROOT_PASSWORD: local-only
+    tmpfs:
+      - /var/lib/mysql:size=512m
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8029:8025"

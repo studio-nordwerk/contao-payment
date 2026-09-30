@@ -1,0 +1,13 @@
+body {
+  font: 1rem/1.6 system-ui;
+  color: CanvasText;
+  background: Canvas;
+  color-scheme: light dark;
+}
+main {
+  max-width: 48rem;
+  margin: 4rem auto;
+  padding: var(--nw-space-lg, 1.5rem);
+  border: 1px solid var(--nw-border, GrayText);
+  border-radius: var(--nw-radius-card, 1.125rem);
+}

@@ -1,0 +1,22 @@
+services:
+  _defaults:
+    autowire: true
+    autoconfigure: true
+  Nordwerk\PaymentBundle\:
+    resource: "../src/"
+    exclude: "../src/{Domain,ContaoManager,DependencyInjection,NordwerkPaymentBundle.php}"
+  Nordwerk\PaymentBundle\Settings\SecretCipher:
+    arguments:
+      $appSecret: "%kernel.secret%"
+  Nordwerk\PaymentBundle\Provider\StripeClientInterface:
+    alias: Nordwerk\PaymentBundle\Provider\StripeClient
+  Nordwerk\PaymentBundle\Settings\PaymentSettings:
+    public: true
+  Nordwerk\PaymentBundle\Persistence\PaymentService:
+    public: true
+    arguments:
+      $resolvers: !tagged_iterator nordwerk.payment.payable_resolver
+  Nordwerk\PaymentBundle\Provider\StripeProvider:
+    public: true
+  Nordwerk\PaymentBundle\Persistence\PaymentRepository:
+    public: true

@@ -1,0 +1,53 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    env:
+      APP_ENV: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install Vite Plus
+        run: npm install --global vite-plus@1.0.0
+      - name: Create disposable demo configuration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import secrets
+          config = Path('.env.example').read_text()
+          config = config.replace('CONTAO_ADMIN_PASSWORD=change-me', 'CONTAO_ADMIN_PASSWORD=' + secrets.token_urlsafe(32))
+          config = config.replace('APP_SECRET=change-me-too', 'APP_SECRET=' + secrets.token_hex(32))
+          Path('.env').write_text(config)
+          PY
+      - name: Start isolated demo and install dependencies
+        run: make reset
+      - name: Allow PHP-FPM to write runtime files
+        run: docker compose exec -T php sh -c "chown -R www-data:www-data /workspace/app/var /workspace/app/assets"
+      - name: Verify return page
+        run: curl --fail --silent --show-error http://127.0.0.1:8084/_nw/payment/return/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | rg 'Zahlung wird geprüft'
+      - name: Install browser system libraries
+        run: vp exec playwright install --with-deps chromium
+      - name: Check
+        run: make check
+      - name: Upload Playwright error context
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-error-context-${{ matrix.environment }}
+          path: test-results/**/error-context.md
+          if-no-files-found: ignore
+      - name: Stop this demo
+        if: always()
+        run: docker compose down

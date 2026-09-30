@@ -1,0 +1,18 @@
+<?php $escape = static fn ($value): string => htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8'); ?>
+<h2 class="sub_headline">Zahlungen</h2>
+<?php if ($this->error): ?><div class="tl_message"><p class="tl_error" role="alert"><?= $escape($this->error) ?></p></div><?php endif; ?>
+<?php if ($this->notice): ?><div class="tl_message"><p class="tl_confirm"><?= $escape($this->notice) ?></p></div><?php endif; ?>
+<div class="tl_listing_container"><table class="tl_listing"><thead><tr><th>ID / Bezug</th><th>Betrag</th><th>Anbieter / Referenz</th><th>Status</th><th>Aktion</th></tr></thead><tbody>
+<?php foreach ($this->payments as $payment): ?><tr><td><?= $payment->id ?> / <?= $escape($payment->payableType) ?> <?= $escape($payment->payableId) ?></td><td><?= $payment->money->cents ?> Cent <?= $escape($payment->money->currency) ?></td><td><?= $escape($payment->provider) ?><br><?= $escape($payment->reference) ?></td><td><?= $escape($payment->status->value) ?><br>Erstattet: <?= $payment->refundedCents ?> Cent</td><td>
+    <?php if ('bank_transfer' === $payment->provider && in_array($payment->status->value, ['open', 'pending'], true)): ?>
+        <form data-turbo="false" method="post" action="contao?do=nw_payments"><input type="hidden" name="REQUEST_TOKEN" value="<?= $escape($this->requestToken) ?>"><input type="hidden" name="payment" value="<?= $payment->id ?>"><button class="tl_submit" name="action" value="confirm">Vorkasse bestätigen</button></form>
+    <?php endif; ?>
+    <?php if (in_array($payment->status->value, ['paid', 'partially_refunded'], true)): ?>
+        <form data-turbo="false" method="post" action="contao?do=nw_payments"><input type="hidden" name="REQUEST_TOKEN" value="<?= $escape($this->requestToken) ?>"><input type="hidden" name="payment" value="<?= $payment->id ?>"><input type="hidden" name="operation" value="<?= $escape($this->operation) ?>"><label for="refund_<?= $payment->id ?>">Erstattung in Cent</label><input class="tl_text" type="number" id="refund_<?= $payment->id ?>" name="amount" min="1" max="<?= $payment->money->cents - $payment->refundedCents ?>" value="<?= $payment->money->cents - $payment->refundedCents ?>" required><?php if ('bank_transfer' === $payment->provider): ?><p>Bereits überwiesene Erstattung dokumentieren.</p><?php endif; ?><button class="tl_submit" name="action" value="refund">Erstatten</button></form>
+    <?php endif; ?>
+</td></tr><?php endforeach; ?>
+</tbody></table></div>
+<h2 class="sub_headline">Ereignisprotokoll (UTC)</h2>
+<div class="tl_listing_container"><table class="tl_listing"><thead><tr><th>Zahlung</th><th>Anbieter-Event</th><th>Status</th><th>Empfangen (UTC)</th></tr></thead><tbody>
+<?php foreach ($this->events as $event): ?><tr><td><?= (int) $event['payment_id'] ?></td><td><?= $escape($event['provider_event_id']) ?></td><td><?= $escape($event['status']) ?></td><td><?= $escape(gmdate('Y-m-d H:i:s', (int) $event['received_at'])) ?></td></tr><?php endforeach; ?>
+</tbody></table></div>

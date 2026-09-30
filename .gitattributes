@@ -1,0 +1,22 @@
+* text=auto eol=lf
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.prettierignore export-ignore
+/.env.example export-ignore
+/.github export-ignore
+/Makefile export-ignore
+/app export-ignore
+/compose.yaml export-ignore
+/docker export-ignore
+/docs export-ignore
+/e2e export-ignore
+/ecs.php export-ignore
+/package.json export-ignore
+/phpstan.neon.dist export-ignore
+/phpunit.xml.dist export-ignore
+/playwright.config.ts export-ignore
+/pnpm-lock.yaml export-ignore
+/scripts export-ignore
+/tests export-ignore
+/tsconfig.json export-ignore
+/vite.config.ts export-ignore

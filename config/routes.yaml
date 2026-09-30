@@ -1,0 +1,3 @@
+payment:
+  resource: ../src/Controller/
+  type: attribute
