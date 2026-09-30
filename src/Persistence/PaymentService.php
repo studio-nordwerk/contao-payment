@@ -74,8 +74,11 @@ final readonly class PaymentService
                 if ($payment->provider !== $provider || !$payment->money->equals($money)) {
                     throw new \InvalidArgumentException('Payment retry does not match original checkout.');
                 }
-                if (PaymentStatus::Open !== $payment->status && PaymentStatus::Pending !== $payment->status) {
+                if (PaymentStatus::Open !== $payment->status) {
                     return new CheckoutResult($payment->reference, $origin.'/_nw/payment/return/'.$payment->token);
+                }
+                if ('' !== $payment->reference) {
+                    return 'stripe' === $provider ? $this->stripe->resumeCheckout(new PaymentRequest($payment, $origin.'/_nw/payment/return/'.$payment->token, $description)) : new CheckoutResult($payment->reference);
                 }
                 $result = $this->provider($provider)->createCheckout(new PaymentRequest($payment, $origin.'/_nw/payment/return/'.$payment->token, $description));
                 $this->connection->update('tl_nw_payment', ['provider_reference' => $result->reference, 'updated_at' => time()], ['id' => $payment->id]);

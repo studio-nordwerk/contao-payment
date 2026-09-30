@@ -54,6 +54,18 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         return new CheckoutResult((string) $session['id'], (string) $session['url']);
     }
 
+    public function resumeCheckout(PaymentRequest $request): CheckoutResult
+    {
+        $payment = $request->payment;
+        $session = $this->client->request('get', '/v1/checkout/sessions/'.rawurlencode($payment->reference));
+        $event = $this->sessionEvent('resume:'.$payment->id, $session, PaymentStatus::Open);
+        if ($event->paymentId !== $payment->id || $event->reference !== $payment->reference || !$event->money->equals($payment->money) || $event->testMode !== $payment->testMode) {
+            throw new \InvalidArgumentException('Stripe session does not match payment.');
+        }
+
+        return new CheckoutResult($payment->reference, 'open' === ($session['status'] ?? '') ? (string) $session['url'] : $request->returnUrl);
+    }
+
     public function parseWebhook(Request $request): PaymentEvent
     {
         $secret = $this->settings->webhookSecret();

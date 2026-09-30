@@ -186,6 +186,39 @@ final class PaymentProcessingTest extends TestCase
         }
     }
 
+    public function testCheckoutRetriesReuseReferenceEvenAfterProviderKeysExpire(): void
+    {
+        $client = $this->createMock(StripeClientInterface::class);
+        $posts = 0;
+        $session = [];
+        $client
+            ->method('request')
+            ->willReturnCallback(
+                static function (string $method, string $path, array $parameters) use (&$posts, &$session): array {
+                    if ('post' === $method) {
+                        ++$posts;
+                        $session = ['id' => 'cs_retry_'.$posts, 'url' => 'https://checkout.example.test/'.$posts, 'livemode' => false, 'metadata' => $parameters['metadata'], 'amount_total' => 1000, 'currency' => 'eur', 'status' => 'open', 'payment_status' => 'unpaid'];
+                    }
+
+                    return $session;
+                },
+            )
+        ;
+        $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($client, $this->settings), $this->settings, [], new NullLogger());
+        $payable = bin2hex(random_bytes(8));
+        $first = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');
+        $retry = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');
+        $this->assertSame($first->reference, $retry->reference);
+        $this->assertSame($first->redirectUrl, $retry->redirectUrl);
+        $payment = $this->repository->forPayable('fixture', $payable);
+        $this->assertNotNull($payment);
+        $this->db->update('tl_nw_payment', ['status' => 'pending', 'created_at' => time() - 259200], ['id' => $payment->id]);
+        $pending = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');
+        $this->assertSame('https://example.test/_nw/payment/return/'.$payment->token, $pending->redirectUrl);
+        $this->assertSame(1, $posts);
+        $this->assertSame($first->reference, $this->repository->find($payment->id)->reference);
+    }
+
     private function signed(string $raw, int $timestamp, string|null $signedRaw = null): Request
     {
         $signature = hash_hmac('sha256', $timestamp.'.'.($signedRaw ?? $raw), 'whsec_local_fixture');
