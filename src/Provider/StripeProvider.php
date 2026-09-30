@@ -155,6 +155,7 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
             $refunded > 0 => PaymentStatus::PartiallyRefunded,
             'paid' === ($session['payment_status'] ?? '') => PaymentStatus::Paid,
             'expired' === ($session['status'] ?? '') => PaymentStatus::Expired,
+            'complete' === ($session['status'] ?? '') && \is_array($intent) && ('canceled' === ($intent['status'] ?? '') || ('requires_payment_method' === ($intent['status'] ?? '') && null !== ($intent['last_payment_error'] ?? null)) || (\is_array($charge) && 'failed' === ($charge['status'] ?? ''))) => PaymentStatus::Failed,
             'complete' === ($session['status'] ?? '') => PaymentStatus::Pending,
             default => PaymentStatus::Open,
         };

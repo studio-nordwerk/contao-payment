@@ -56,6 +56,31 @@ final class PaymentProcessingTest extends TestCase
         $this->db->close();
     }
 
+    public function testCronRecognizesFailedAsyncIntentsAndChargesWithoutWebhook(): void
+    {
+        foreach ([
+            [['status' => 'requires_payment_method', 'last_payment_error' => ['code' => 'payment_failed']], PaymentStatus::Failed],
+            [['status' => 'canceled'], PaymentStatus::Failed],
+            [['status' => 'processing', 'latest_charge' => ['status' => 'failed']], PaymentStatus::Failed],
+            [['status' => 'processing', 'latest_charge' => ['status' => 'pending']], PaymentStatus::Pending],
+            [['status' => 'requires_payment_method', 'last_payment_error' => null], PaymentStatus::Pending],
+        ] as [$intent, $expected]) {
+            $payment = $this->create();
+            $this->db->update('tl_nw_payment', ['provider' => 'stripe', 'provider_reference' => 'cs_'.$payment->id, 'status' => 'pending', 'created_at' => time() - 700], ['id' => $payment->id]);
+            $payment = $this->repository->find($payment->id);
+            $client = $this->createMock(StripeClientInterface::class);
+            $client
+                ->method('request')
+                ->willReturn(['id' => $payment->reference, 'metadata' => ['payment_id' => (string) $payment->id], 'amount_total' => $payment->money->cents, 'currency' => 'eur', 'livemode' => false, 'status' => 'complete', 'payment_status' => 'unpaid', 'payment_intent' => $intent])
+            ;
+            $stripe = new StripeProvider($client, $this->settings);
+            $this->assertSame($expected, $stripe->fetchSnapshot($payment)->status);
+            $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), $stripe, $this->settings, [], new NullLogger());
+            $service->reconcile();
+            $this->assertSame($expected, $this->repository->find($payment->id)->status);
+        }
+    }
+
     public function testDuplicateAndLateEventsDoNotRepeatPaidCallback(): void
     {
         $payment = $this->create();
