@@ -55,3 +55,21 @@ Der CLI-Smoke-Test umgeht den lokalen Stub. Für einen vollständigen Browser-Te
 Das Paket speichert je Bezug zunächst einen Zahlvorgang; zusätzliche Bezahllinks/Versuche sind P4. Eine Rückkehr nach Abbruch bleibt offen, bis Stripe Ablauf oder Zahlung bestätigt. Eine vollständige Zahlungserstattung setzt den Shop-Bestellstatus nicht automatisch auf storniert und löst keinen automatischen Widerruf aus. Die Verknüpfung erfolgt über Zahlungs-ID und Bestellnummer.
 
 Teilerstattungen bei einem Steuersatz erzeugen einen Storno-Beleg mit kumulativer Cent-Rundung; bei mehreren Steuersätzen ist eine fachliche Positionszuordnung erforderlich. Solche Erstattungen werden im Shop als „Steuerzuordnung erforderlich“ angezeigt. Die offene Produktentscheidung steht in [docs/roadmap.md](docs/roadmap.md). Zahlungsregeln: [docs/rules.md](docs/rules.md).
+
+## Local bank transfer helpers
+
+`BankTransfer\Iban::valid()` checks the mod-97 checksum using integer arithmetic;
+`normalize()` removes spaces and uppercases the IBAN. `GiroCode::payload()` is a pure EPC069-12
+002/UTF-8 function: beneficiary ≤70 characters, unstructured reference ≤140 characters,
+maximum payload 331 bytes, positive cent amount formatted as `EUR12.34`, optional BIC.
+Invalid or multiline input is rejected. `GiroCode::image()` produces a local PNG with
+chillerlan/php-qrcode 5.x, error correction M and QR version ≤13, and returns null for other
+currencies/methods or invalid legacy bank data. GD and mbstring are required; generation
+makes no network requests. Consumers embed PNG bytes in MIME messages and PDFs.
+
+Specification: [European Payments Council EPC069-12](https://www.europeanpaymentscouncil.eu/document-library/guidance-documents/quick-response-code-guidelines-enable-data-capture-initiation).
+Library: [chillerlan/php-qrcode](https://github.com/chillerlan/php-qrcode/tree/v5.0.x).
+
+Decided 2026-09-30: a full refund does not automatically cancel fulfillment. A withdrawal is
+reviewed by the merchant before a refund; failed/expired payments are not automatically
+restarted (new payment links belong to P4).

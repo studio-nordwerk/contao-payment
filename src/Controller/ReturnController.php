@@ -31,6 +31,8 @@ final readonly class ReturnController
             throw new NotFoundHttpException();
         }
         $payment = $this->repository->find((int) $id);
+        // Decided 2026-09-30: no automatic retry after failure/expiry; a new payment
+        // link belongs to P4.
         $pending = \in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true);
         $message = match ($payment->status) {
             PaymentStatus::Paid => 'Zahlung bestätigt',
