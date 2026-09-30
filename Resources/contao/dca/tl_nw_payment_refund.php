@@ -15,6 +15,7 @@ $GLOBALS['TL_DCA']['tl_nw_payment_refund'] = [
         'created_at' => ['sql' => 'int unsigned NOT NULL default 0'],
         'amount' => ['sql' => 'bigint unsigned NOT NULL'],
         'provider_reference' => ['sql' => 'varchar(255) NOT NULL'],
+        'status' => ['sql' => "varchar(32) NOT NULL default 'pending'"],
         'succeeded' => ['sql' => "char(1) NOT NULL default ''"],
     ],
 ];

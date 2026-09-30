@@ -14,6 +14,9 @@ final readonly class PaymentEvent
         public Money $money,
         public int $refundedCents = 0,
         public bool $testMode = true,
+        public RefundResult|null $refund = null,
+        public string $refundOperation = '',
+        public int $refundAmount = 0,
     ) {
         if ('' === $eventId || $paymentId < 1) {
             throw new \InvalidArgumentException('Invalid payment event.');

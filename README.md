@@ -18,6 +18,8 @@ Das nutzende Bundle implementiert `PayableResolverInterface` und registriert den
 
 `PaymentProviderInterface`: `createCheckout(PaymentRequest)`, `parseWebhook(Request)`, `refund(Payment, Money)`, `fetchStatus(Payment)`. `Money` besteht aus Integer-Cent und einer dreistelligen ISO-Währung. Anbieter sind `bank_transfer` und `stripe`.
 
+Abonnierte Stripe-Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `refund.created`, `refund.updated`, `refund.failed`. Ausstehende Erstattungen werden anhand ihrer Stripe-Refund-ID abgeglichen; `failed` und `canceled` geben die Reservierung frei.
+
 Webhook: `POST /_nw/payment/webhook/{provider}`. Stripe-Signaturen werden über den unveränderten HTTP-Body mit 300 Sekunden Zeittoleranz geprüft. Betrag, Währung, Zahlungs-ID, Session-Referenz und Modus müssen passen. Kein CSRF, keine Session; falsche Signaturen ergeben HTTP 400. Bekannte, doppelte Events und korrekt signierte unbekannte Eventarten erhalten 204. Fehler in der Verarbeitung bleiben wiederholbar.
 
 Die Rückkehrseite `/_nw/payment/return/{token}` zeigt „Zahlung wird geprüft“ und lädt ohne JavaScript alle fünf Sekunden neu. Sie bestätigt niemals selbst eine Zahlung. Contao-Cron gleicht offene Zahlungen nach zehn Minuten beim Anbieter ab. Der Webserver muss Contao-Cron regelmäßig auslösen; alternativ das Contao-Cron-Framework über die CLI betreiben.

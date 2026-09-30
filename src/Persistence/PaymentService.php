@@ -14,6 +14,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentRequest;
 use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
+use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -102,6 +103,15 @@ final readonly class PaymentService
                 if ($this->connection->fetchOne('SELECT id FROM tl_nw_payment_event WHERE provider = ? AND provider_event_id = ?', [$provider, $event->eventId])) {
                     return false;
                 }
+                if (null !== $event->refund) {
+                    $operation = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE payment_id = ? AND (provider_reference = ? OR operation_token = ?) FOR UPDATE', [$payment->id, $event->refund->reference, $event->refundOperation]);
+                    if (false !== $operation) {
+                        if ((int) $operation['amount'] !== $event->refundAmount || ('' !== $operation['provider_reference'] && $operation['provider_reference'] !== $event->refund->reference)) {
+                            throw new \InvalidArgumentException('Refund event does not match operation.');
+                        }
+                        $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $event->refund->reference, 'succeeded' => $event->refund->succeeded ? 1 : 0, 'status' => $event->refund->status->value, 'tstamp' => time()], ['id' => $operation['id']]);
+                    }
+                }
                 if (\in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true) && \in_array($event->status, [PaymentStatus::Refunded, PaymentStatus::PartiallyRefunded], true)) {
                     // A refund proves prior payment even when webhooks arrive out of order.
                     $this->apply($provider, new PaymentEvent('refund-paid:'.$event->eventId, $payment->id, $payment->reference, PaymentStatus::Paid, $payment->money, testMode: $payment->testMode));
@@ -118,9 +128,6 @@ final readonly class PaymentService
                     return false;
                 }
                 $this->connection->update('tl_nw_payment', ['status' => $event->status->value, 'refunded_amount' => max($previous, $event->refundedCents), 'updated_at' => time(), 'tstamp' => time()], ['id' => $payment->id]);
-                if ($refundChanged) {
-                    $this->connection->executeStatement('UPDATE tl_nw_payment_refund SET succeeded = 1 WHERE provider_reference <> \'\' AND payment_id = ? AND succeeded = 0 AND amount <= ?', [$payment->id, $event->refundedCents - $previous]);
-                }
                 $updated = $this->repository->find($payment->id);
 
                 foreach ($this->resolvers as $resolver) {
@@ -169,7 +176,7 @@ final readonly class PaymentService
 
                     return;
                 }
-                $pending = (int) $this->connection->fetchOne('SELECT COUNT(*) FROM tl_nw_payment_refund WHERE payment_id = ? AND succeeded = 0', [$id]);
+                $pending = (int) $this->connection->fetchOne('SELECT COUNT(*) FROM tl_nw_payment_refund WHERE payment_id = ? AND succeeded = 0 AND status IN (\'pending\', \'requires_action\')', [$id]);
                 if ($pending > 0 || !\in_array($payment->status, [PaymentStatus::Paid, PaymentStatus::PartiallyRefunded], true) || $money->currency !== $payment->money->currency || $money->cents < 1 || $money->cents > $payment->money->cents - $payment->refundedCents) {
                     throw new \InvalidArgumentException('Erstattungsbetrag oder Zahlungsstatus ungültig.');
                 }
@@ -185,10 +192,10 @@ final readonly class PaymentService
                     throw new \RuntimeException('Refund operation missing.');
                 }
                 if ('' !== $existing['provider_reference']) {
-                    return new RefundResult((string) $existing['provider_reference'], (bool) $existing['succeeded']);
+                    return new RefundResult((string) $existing['provider_reference'], (bool) $existing['succeeded'], (bool) $existing['succeeded'] ? RefundStatus::Succeeded : RefundStatus::from((string) $existing['status']));
                 }
                 $result = $this->provider($payment->provider)->refund($payment, $money, $operation);
-                $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0], ['operation_token' => $operation]);
+                $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0, 'status' => $result->status->value], ['operation_token' => $operation]);
                 if ($result->succeeded) {
                     $total = (int) $existing['base_refunded_amount'] + $money->cents;
                     $this->apply($payment->provider, new PaymentEvent('refund:'.$result->reference, $id, $payment->reference, $total === $payment->money->cents ? PaymentStatus::Refunded : PaymentStatus::PartiallyRefunded, $payment->money, $total, $payment->testMode));
@@ -201,6 +208,22 @@ final readonly class PaymentService
 
     public function reconcile(): void
     {
+        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider = 'stripe' AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.tstamp, r.id LIMIT 100");
+
+        foreach ($refunds as $refund) {
+            try {
+                if ('' === $refund['provider_reference']) {
+                    $payment = $this->repository->find((int) $refund['payment_id']);
+                    $this->refund($payment->id, new Money((int) $refund['amount'], $payment->money->currency), (string) $refund['operation_token']);
+                } else {
+                    $event = $this->stripe->refundEvent('refund-fetch:'.$refund['id'].':'.bin2hex(random_bytes(16)), (string) $refund['provider_reference']);
+                    $this->apply('stripe', $event);
+                }
+            } catch (\Throwable $exception) {
+                $this->logger->error('Refund reconciliation deferred.', ['payment_id' => (int) $refund['payment_id'], 'failure_type' => $exception::class]);
+            }
+        }
+
         $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE status IN ('open', 'pending') AND created_at < ? AND provider_reference <> '' AND provider <> 'bank_transfer' ORDER BY checked_at, id LIMIT 100", [time() - 600]);
 
         foreach ($ids as $id) {
