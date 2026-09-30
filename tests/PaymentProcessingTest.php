@@ -165,6 +165,19 @@ final class PaymentProcessingTest extends TestCase
         $this->assertSame(1, $this->resolver->paidCalls);
     }
 
+    public function testProviderStatusIncludesExternalPartialRefunds(): void
+    {
+        $client = $this->createMock(StripeClientInterface::class);
+        $client
+            ->method('request')
+            ->willReturn(['id' => 'cs_fixture', 'livemode' => false, 'metadata' => ['payment_id' => '1'], 'amount_total' => 1000, 'currency' => 'eur', 'payment_status' => 'paid', 'payment_intent' => ['latest_charge' => ['amount_refunded' => 100]]])
+        ;
+        $stripe = new StripeProvider($client, $this->settings);
+        $payment = new Payment(1, 'fixture', 'external-refund', new Money(1000), 'stripe', 'cs_fixture', PaymentStatus::Paid);
+        $this->assertSame(PaymentStatus::PartiallyRefunded, $stripe->fetchStatus($payment));
+        $this->assertSame(100, $stripe->fetchSnapshot($payment)->refundedCents);
+    }
+
     private function signed(string $raw, int $timestamp, string|null $signedRaw = null): Request
     {
         $signature = hash_hmac('sha256', $timestamp.'.'.($signedRaw ?? $raw), 'whsec_local_fixture');

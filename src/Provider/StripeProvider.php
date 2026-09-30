@@ -10,6 +10,7 @@ use Nordwerk\PaymentBundle\Domain\Payment;
 use Nordwerk\PaymentBundle\Domain\PaymentEvent;
 use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
+use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -17,7 +18,7 @@ use Stripe\Exception\SignatureVerificationException;
 use Stripe\Webhook;
 use Symfony\Component\HttpFoundation\Request;
 
-final readonly class StripeProvider implements PaymentProviderInterface
+final readonly class StripeProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface
 {
     public const EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', 'checkout.session.expired', 'charge.refunded'];
 
@@ -106,18 +107,29 @@ final readonly class StripeProvider implements PaymentProviderInterface
 
     public function fetchStatus(Payment $payment): PaymentStatus
     {
-        $session = $this->client->request('get', '/v1/checkout/sessions/'.rawurlencode($payment->reference));
-        $event = $this->sessionEvent('fetch:'.$payment->id, $session, match (true) {
+        return $this->fetchSnapshot($payment)->status;
+    }
+
+    public function fetchSnapshot(Payment $payment): PaymentEvent
+    {
+        $session = $this->client->request('get', '/v1/checkout/sessions/'.rawurlencode($payment->reference), ['expand' => ['payment_intent.latest_charge']]);
+        $intent = $session['payment_intent'] ?? null;
+        $charge = \is_array($intent) ? ($intent['latest_charge'] ?? null) : null;
+        $refunded = \is_array($charge) ? (int) ($charge['amount_refunded'] ?? 0) : 0;
+        $status = match (true) {
+            $refunded > 0 && $refunded === $payment->money->cents => PaymentStatus::Refunded,
+            $refunded > 0 => PaymentStatus::PartiallyRefunded,
             'paid' === ($session['payment_status'] ?? '') => PaymentStatus::Paid,
             'expired' === ($session['status'] ?? '') => PaymentStatus::Expired,
             'complete' === ($session['status'] ?? '') => PaymentStatus::Pending,
             default => PaymentStatus::Open,
-        });
-        if ($event->paymentId !== $payment->id || !$event->money->equals($payment->money) || $event->testMode !== $payment->testMode) {
+        };
+        $event = $this->sessionEvent('fetch:'.$payment->id.':'.$status->value.':'.$refunded, $session, $status, $refunded);
+        if ($event->paymentId !== $payment->id || $event->reference !== $payment->reference || !$event->money->equals($payment->money) || $event->testMode !== $payment->testMode) {
             throw new \InvalidArgumentException('Stripe status does not match payment.');
         }
 
-        return $event->status;
+        return $event;
     }
 
     public function registerWebhook(string $url): void

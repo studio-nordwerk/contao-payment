@@ -11,6 +11,7 @@ use Nordwerk\PaymentBundle\Domain\PayableResolverInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentEvent;
 use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
+use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
@@ -184,9 +185,11 @@ final readonly class PaymentService
             try {
                 $this->connection->update('tl_nw_payment', ['checked_at' => time()], ['id' => (int) $id]);
                 $payment = $this->repository->find((int) $id);
-                $status = $this->provider($payment->provider)->fetchStatus($payment);
+                $provider = $this->provider($payment->provider);
+                $status = $provider->fetchStatus($payment);
                 if ($status !== $payment->status) {
-                    $this->apply($payment->provider, new PaymentEvent('fetch:'.$id.':'.$status->value, (int) $id, $payment->reference, $status, $payment->money, testMode: $payment->testMode));
+                    $event = $provider instanceof PaymentSnapshotProviderInterface ? $provider->fetchSnapshot($payment) : new PaymentEvent('fetch:'.$id.':'.$status->value, (int) $id, $payment->reference, $status, $payment->money, testMode: $payment->testMode);
+                    $this->apply($payment->provider, $event);
                 }
             } catch (\Throwable $exception) {
                 $this->logger->error('Payment reconciliation deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
