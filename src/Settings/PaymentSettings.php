@@ -86,6 +86,48 @@ final readonly class PaymentSettings
         $this->persist($data);
     }
 
+    public function prepareWebhook(string $url): void
+    {
+        if ($this->connection->isTransactionActive()) {
+            throw new \LogicException('Webhook registration requires a committed operation.');
+        }
+        $this->connection->transactional(
+            function () use ($url): void {
+                $data = $this->lockedData();
+                $identity = hash('sha256', $url.':'.($this->testMode() ? 'test' : 'live').':'.$this->secretKey());
+                if (isset($data['webhookIdentity']) && $data['webhookIdentity'] !== $identity) {
+                    throw new \InvalidArgumentException('Webhook-Adresse oder Stripe-Konto geändert. Vorhandenen Endpunkt vor dem Wechsel prüfen.');
+                }
+                $data['webhookIdentity'] = $identity;
+                $data['webhookOperation'] ??= bin2hex(random_bytes(32));
+                $this->persist($data);
+            },
+        );
+    }
+
+    /**
+     * @param callable(array<string, mixed>): void $register
+     */
+    public function withWebhookLock(callable $register): void
+    {
+        $this->connection->transactional(
+            function () use ($register): void {
+                $register($this->lockedData());
+            },
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function lockedData(): array
+    {
+        $this->connection->executeStatement("INSERT IGNORE INTO tl_nw_payment_settings (id, tstamp, data) VALUES (1, ?, '{}')", [time()]);
+        $json = $this->connection->fetchOne('SELECT data FROM tl_nw_payment_settings WHERE id = 1 FOR UPDATE');
+
+        return json_decode((string) $json, true, 512, JSON_THROW_ON_ERROR);
+    }
+
     public function saveWebhook(string $secret, string $endpointId): void
     {
         if (!str_starts_with($secret, 'whsec_')) {

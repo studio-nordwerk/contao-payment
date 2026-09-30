@@ -172,11 +172,26 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         if (!$this->settings->testMode() && !str_starts_with($url, 'https://')) {
             throw new \InvalidArgumentException('Live-Webhooks benötigen HTTPS.');
         }
-        $endpoint = $this->client->request('post', '/v1/webhook_endpoints', ['url' => $url, 'enabled_events' => self::EVENTS]);
-        if ((bool) ($endpoint['livemode'] ?? true) === $this->settings->testMode()) {
-            throw new \RuntimeException('Webhook-Testmodus stimmt nicht überein.');
-        }
-        $this->settings->saveWebhook((string) $endpoint['secret'], (string) $endpoint['id']);
+        $this->settings->prepareWebhook($url);
+        $this->settings->withWebhookLock(
+            function (array $data) use ($url): void {
+                if ('' !== ($data['endpointId'] ?? '')) {
+                    $path = '/v1/webhook_endpoints/'.rawurlencode((string) $data['endpointId']);
+                    $endpoint = $this->client->request('get', $path);
+                    if ((bool) ($endpoint['livemode'] ?? true) === $this->settings->testMode() || ($endpoint['url'] ?? '') !== $url || ($endpoint['id'] ?? '') !== $data['endpointId']) {
+                        throw new \InvalidArgumentException('Gespeicherter Webhook passt nicht zu Adresse oder Modus.');
+                    }
+                    $this->client->request('post', $path, ['enabled_events' => self::EVENTS]);
+
+                    return;
+                }
+                $endpoint = $this->client->request('post', '/v1/webhook_endpoints', ['url' => $url, 'enabled_events' => self::EVENTS], 'webhook:'.$data['webhookOperation']);
+                if ((bool) ($endpoint['livemode'] ?? true) === $this->settings->testMode()) {
+                    throw new \RuntimeException('Webhook-Testmodus stimmt nicht überein.');
+                }
+                $this->settings->saveWebhook((string) $endpoint['secret'], (string) $endpoint['id']);
+            },
+        );
     }
 
     /**

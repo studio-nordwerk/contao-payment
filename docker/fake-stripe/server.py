@@ -2,7 +2,7 @@
 import hashlib, hmac, html, json, os, threading, time, urllib.parse, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-sessions, keys, events = {}, {}, {}
+sessions, keys, events, endpoints = {}, {}, {}, {}
 timeout_payments = set()
 lock = threading.RLock()
 secret = os.environ.get('FAKE_STRIPE_WEBHOOK_SECRET', 'whsec_local_fixture')
@@ -46,7 +46,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path.query)
         with lock:
-            if path.path == '/v1/checkout/sessions':
+            if path.path.startswith('/v1/webhook_endpoints/'):
+                endpoint = endpoints.get(path.path.rsplit('/', 1)[1])
+                self.reply({k: v for k, v in endpoint.items() if k != 'secret'} if endpoint else {'error': {'message': 'Not found'}}, 200 if endpoint else 404)
+            elif path.path == '/v1/checkout/sessions':
                 self.reply({'object': 'list', 'data': [s for s in sessions.values() if s['payment_intent'] == query.get('payment_intent', [''])[0]], 'has_more': False})
             elif path.path.startswith('/v1/checkout/sessions/'):
                 s = sessions.get(path.path.rsplit('/',1)[1])
@@ -83,8 +86,15 @@ class Handler(BaseHTTPRequestHandler):
                 if key: keys[key] = s
                 self.reply(s)
             elif path == '/v1/webhook_endpoints':
-                result={'id':'we_'+uuid.uuid4().hex,'object':'webhook_endpoint','livemode':False,'secret':secret}
+                result={'id':'we_'+uuid.uuid4().hex,'object':'webhook_endpoint','livemode':False,'secret':secret,'url':field('url'),'enabled_events':data.get('enabled_events[]', [])}
+                endpoints[result['id']] = result
+                if key: keys[key] = result
                 self.reply(result)
+            elif path.startswith('/v1/webhook_endpoints/'):
+                endpoint = endpoints.get(path.rsplit('/', 1)[1])
+                if not endpoint: self.reply({'error': {'message': 'Not found'}}, 404); return
+                endpoint['enabled_events'] = data.get('enabled_events[]', [])
+                self.reply({k: v for k, v in endpoint.items() if k != 'secret'})
             elif path == '/_fixture/refund-timeout':
                 timeout_payments.add(field('payment_id'))
                 self.reply({'ok':True})
