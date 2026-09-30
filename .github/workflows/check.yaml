@@ -51,3 +51,35 @@ jobs:
       - name: Stop this demo
         if: always()
         run: docker compose down
+  publish:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish Manager ZIP to downloads.nordwerk.studio
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          PACKAGE: contao-payment
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
+            zip_version="${GITHUB_REF_NAME#v}"
+            channels="stable preview"
+          else
+            base="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+            version="main-${GITHUB_SHA::12}"
+            zip_version="${base#v}-dev"
+            channels="preview"
+          fi
+          python3 scripts/build-artifact.py "$zip_version" "dist/$PACKAGE.zip"
+          for channel in $channels; do
+            curl --fail-with-body -sS -X PUT \
+              -H "Authorization: Bearer $PUBLISH_TOKEN" \
+              -H "Content-Type: application/zip" \
+              --data-binary "@dist/$PACKAGE.zip" \
+              "https://downloads.nordwerk.studio/publish/$PACKAGE/$version?channel=$channel&sha=$GITHUB_SHA"
+            echo
+          done
