@@ -97,10 +97,10 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         return $this->sessionEvent((string) $event['id'], $object, $status);
     }
 
-    public function refund(Payment $payment, Money $money): RefundResult
+    public function refund(Payment $payment, Money $money, string $operation): RefundResult
     {
         $session = $this->client->request('get', '/v1/checkout/sessions/'.rawurlencode($payment->reference));
-        $refund = $this->client->request('post', '/v1/refunds', ['payment_intent' => $session['payment_intent'], 'amount' => $money->cents, 'metadata' => ['payment_id' => (string) $payment->id]], 'refund:'.$payment->id.':'.$payment->refundedCents.':'.$money->cents);
+        $refund = $this->client->request('post', '/v1/refunds', ['payment_intent' => $session['payment_intent'], 'amount' => $money->cents, 'metadata' => ['payment_id' => (string) $payment->id, 'operation_token' => $operation]], 'refund:'.$operation);
 
         return new RefundResult((string) $refund['id'], 'succeeded' === $refund['status']);
     }

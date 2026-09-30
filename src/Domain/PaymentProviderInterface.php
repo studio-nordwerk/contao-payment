@@ -12,7 +12,7 @@ interface PaymentProviderInterface
 
     public function parseWebhook(Request $request): PaymentEvent;
 
-    public function refund(Payment $payment, Money $money): RefundResult;
+    public function refund(Payment $payment, Money $money, string $operation): RefundResult;
 
     public function fetchStatus(Payment $payment): PaymentStatus;
 }

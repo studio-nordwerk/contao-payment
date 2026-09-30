@@ -116,7 +116,7 @@ final readonly class PaymentService
                 }
                 $this->connection->update('tl_nw_payment', ['status' => $event->status->value, 'refunded_amount' => max($previous, $event->refundedCents), 'updated_at' => time(), 'tstamp' => time()], ['id' => $payment->id]);
                 if ($refundChanged) {
-                    $this->connection->executeStatement('UPDATE tl_nw_payment_refund SET succeeded = 1 WHERE payment_id = ? AND succeeded = 0 AND amount <= ?', [$payment->id, $event->refundedCents - $previous]);
+                    $this->connection->executeStatement('UPDATE tl_nw_payment_refund SET succeeded = 1 WHERE provider_reference <> \'\' AND payment_id = ? AND succeeded = 0 AND amount <= ?', [$payment->id, $event->refundedCents - $previous]);
                 }
                 $updated = $this->repository->find($payment->id);
 
@@ -150,25 +150,44 @@ final readonly class PaymentService
             throw new \InvalidArgumentException('Invalid refund operation.');
         }
 
-        return $this->connection->transactional(
-            function () use ($id, $money, $operation): RefundResult {
+        if ($this->connection->isTransactionActive() && 'stripe' === $this->repository->find($id)->provider) {
+            throw new \LogicException('Stripe refunds require an independently committed operation.');
+        }
+
+        // Reserve under the payment lock and commit BEFORE any money can move.
+        $this->connection->transactional(
+            function () use ($id, $money, $operation): void {
                 $payment = $this->repository->find($id, true);
-                $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ?', [$operation]);
+                $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ? FOR UPDATE', [$operation]);
                 if (false !== $existing) {
-                    if ((int) $existing['payment_id'] !== $id || (int) $existing['amount'] !== $money->cents) {
+                    if ((int) $existing['payment_id'] !== $id || (int) $existing['amount'] !== $money->cents || $money->currency !== $payment->money->currency) {
                         throw new \InvalidArgumentException('Refund retry does not match.');
                     }
 
-                    return new RefundResult((string) $existing['provider_reference'], (bool) $existing['succeeded']);
+                    return;
                 }
                 $pending = (int) $this->connection->fetchOne('SELECT COUNT(*) FROM tl_nw_payment_refund WHERE payment_id = ? AND succeeded = 0', [$id]);
                 if ($pending > 0 || !\in_array($payment->status, [PaymentStatus::Paid, PaymentStatus::PartiallyRefunded], true) || $money->currency !== $payment->money->currency || $money->cents < 1 || $money->cents > $payment->money->cents - $payment->refundedCents) {
                     throw new \InvalidArgumentException('Erstattungsbetrag oder Zahlungsstatus ungültig.');
                 }
-                $result = $this->provider($payment->provider)->refund($payment, $money);
-                $this->connection->insert('tl_nw_payment_refund', ['tstamp' => time(), 'payment_id' => $id, 'operation_token' => $operation, 'amount' => $money->cents, 'provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0]);
+                $this->connection->insert('tl_nw_payment_refund', ['tstamp' => time(), 'created_at' => time(), 'payment_id' => $id, 'operation_token' => $operation, 'amount' => $money->cents, 'base_refunded_amount' => $payment->refundedCents, 'provider_reference' => '', 'succeeded' => 0]);
+            },
+        );
+
+        return $this->connection->transactional(
+            function () use ($id, $money, $operation): RefundResult {
+                $payment = $this->repository->find($id, true);
+                $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ? FOR UPDATE', [$operation]);
+                if (false === $existing) {
+                    throw new \RuntimeException('Refund operation missing.');
+                }
+                if ('' !== $existing['provider_reference']) {
+                    return new RefundResult((string) $existing['provider_reference'], (bool) $existing['succeeded']);
+                }
+                $result = $this->provider($payment->provider)->refund($payment, $money, $operation);
+                $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0], ['operation_token' => $operation]);
                 if ($result->succeeded) {
-                    $total = $payment->refundedCents + $money->cents;
+                    $total = (int) $existing['base_refunded_amount'] + $money->cents;
                     $this->apply($payment->provider, new PaymentEvent('refund:'.$result->reference, $id, $payment->reference, $total === $payment->money->cents ? PaymentStatus::Refunded : PaymentStatus::PartiallyRefunded, $payment->money, $total, $payment->testMode));
                 }
 

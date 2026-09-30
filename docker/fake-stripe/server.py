@@ -3,6 +3,7 @@ import hashlib, hmac, html, json, os, threading, time, urllib.parse, urllib.requ
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sessions, keys, events = {}, {}, {}
+timeout_payments = set()
 lock = threading.RLock()
 secret = os.environ.get('FAKE_STRIPE_WEBHOOK_SECRET', 'whsec_local_fixture')
 webhook = os.environ.get('FAKE_STRIPE_WEBHOOK_URL', 'http://caddy/_nw/payment/webhook/stripe')
@@ -50,6 +51,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path.path.startswith('/v1/checkout/sessions/'):
                 s = sessions.get(path.path.rsplit('/',1)[1])
                 self.reply(s or {'error': {'message': 'Not found'}}, 200 if s else 404)
+            elif path.path.startswith('/_fixture/session/'):
+                self.reply(sessions.get(path.path.rsplit('/',1)[1], {}))
             elif path.path == '/_fixture/events':
                 self.reply(list(events.values()))
             elif path.path.startswith('/checkout/'):
@@ -82,6 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/v1/webhook_endpoints':
                 result={'id':'we_'+uuid.uuid4().hex,'object':'webhook_endpoint','livemode':False,'secret':secret}
                 self.reply(result)
+            elif path == '/_fixture/refund-timeout':
+                timeout_payments.add(field('payment_id'))
+                self.reply({'ok':True})
             elif path == '/v1/refunds':
                 s = next((s for s in sessions.values() if s['payment_intent']==field('payment_intent')),None)
                 amount=int(field('amount','0'))
@@ -91,7 +97,14 @@ class Handler(BaseHTTPRequestHandler):
                 result={'id':'re_'+uuid.uuid4().hex,'object':'refund','status':'succeeded','amount':amount}
                 if key: keys[key]=result
                 e=event(s,'charge.refunded')
-                self.reply(result)
+                if field('metadata[payment_id]') in timeout_payments:
+                    timeout_payments.remove(field('metadata[payment_id]'))
+                    # Money moved, but the HTTP response is lost.
+                    self.close_connection = True
+                    self.connection.shutdown(2)
+                    self.connection.close()
+                else:
+                    self.reply(result)
                 threading.Thread(target=send,args=(e,),daemon=True).start()
             elif path.startswith('/checkout/'):
                 s=sessions.get(path.rsplit('/',1)[1])

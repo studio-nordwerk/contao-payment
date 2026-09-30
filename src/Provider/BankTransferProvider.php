@@ -26,7 +26,7 @@ final class BankTransferProvider implements PaymentProviderInterface
         throw new \InvalidArgumentException('Bank transfers have no webhook.');
     }
 
-    public function refund(Payment $payment, Money $money): RefundResult
+    public function refund(Payment $payment, Money $money, string $operation): RefundResult
     {
         return new RefundResult('manual:'.$payment->id.':'.($payment->refundedCents + $money->cents), true);
     }
