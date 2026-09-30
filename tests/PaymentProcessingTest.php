@@ -178,6 +178,14 @@ final class PaymentProcessingTest extends TestCase
         $this->assertSame(100, $stripe->fetchSnapshot($payment)->refundedCents);
     }
 
+    public function testSignedAsyncCheckoutEventsUseTheirActualPaymentOutcome(): void
+    {
+        foreach (['checkout.session.async_payment_succeeded' => PaymentStatus::Paid, 'checkout.session.async_payment_failed' => PaymentStatus::Failed, 'checkout.session.expired' => PaymentStatus::Expired] as $type => $status) {
+            $raw = json_encode(['id' => 'evt_'.$status->value, 'object' => 'event', 'type' => $type, 'livemode' => false, 'data' => ['object' => ['id' => 'cs_fixture', 'object' => 'checkout.session', 'metadata' => ['payment_id' => '1'], 'amount_total' => 1000, 'currency' => 'eur', 'livemode' => false, 'payment_status' => 'unpaid']]], JSON_THROW_ON_ERROR);
+            $this->assertSame($status, $this->stripe->parseWebhook($this->signed($raw, time()))->status);
+        }
+    }
+
     private function signed(string $raw, int $timestamp, string|null $signedRaw = null): Request
     {
         $signature = hash_hmac('sha256', $timestamp.'.'.($signedRaw ?? $raw), 'whsec_local_fixture');

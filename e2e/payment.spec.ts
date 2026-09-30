@@ -8,9 +8,7 @@ const configuration = Object.fromEntries(
     .map((line) => line.split("=", 2)),
 );
 
-test("native payment backend, secrets and return page work without JavaScript", async ({
-  browser,
-}) => {
+test("native payment backend, encrypted setup and return refresh", async ({ browser }) => {
   mkdirSync("test-results/screenshots", { recursive: true });
   const context = await browser.newContext({ colorScheme: "light" });
   const page = await context.newPage();
