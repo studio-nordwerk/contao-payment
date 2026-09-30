@@ -50,6 +50,6 @@ final class PaymentsModule extends BackendModule
                 $error = $exception instanceof \InvalidArgumentException ? $exception->getMessage() : 'Zahlungsaktion fehlgeschlagen. Bitte erneut prüfen.';
             }
         }
-        $this->Template->setData(['payments' => $repository->recent(), 'events' => $connection->fetchAllAssociative('SELECT * FROM tl_nw_payment_event ORDER BY id DESC LIMIT 100'), 'operation' => bin2hex(random_bytes(32)), 'error' => $error, 'notice' => $notice]);
+        $this->Template->setData(['payments' => $repository->recent(), 'events' => $connection->fetchAllAssociative('SELECT * FROM tl_nw_payment_event ORDER BY id DESC LIMIT 100'), 'error' => $error, 'notice' => $notice]);
     }
 }
