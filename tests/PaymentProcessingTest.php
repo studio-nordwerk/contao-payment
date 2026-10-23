@@ -157,6 +157,43 @@ final class PaymentProcessingTest extends TestCase
         $this->db->executeStatement('UPDATE tl_nw_payment_event SET status = status WHERE payment_id = ?', [$payment->id]);
     }
 
+    public function testOnSitePaymentIsOptInAndConfirmedBySeller(): void
+    {
+        $payable = bin2hex(random_bytes(8));
+        $this->assertArrayNotHasKey('on_site', $this->service->methods());
+
+        try {
+            $this->service->start('fixture', $payable, new Money(1250), 'on_site', 'https://example.test', 'Fixture');
+            $this->fail('Disabled on-site payment was started.');
+        } catch (\InvalidArgumentException) {
+        }
+
+        $this->settings->saveOnSite(true, 'https://paypal.me/hofladen');
+        $this->assertSame('hofladen', $this->settings->payPalMe());
+        $this->assertSame('on_site', array_key_last($this->service->methods()));
+        $result = $this->service->start('fixture', $payable, new Money(1250), 'on_site', 'https://example.test', 'Fixture');
+        $this->assertNull($result->redirectUrl);
+        $payment = $this->repository->forPayable('fixture', $payable);
+        $this->assertNotNull($payment);
+        $this->assertSame('on_site:'.$payment->id, $payment->reference);
+
+        // Nobody pays on site within ten minutes; the cron must not touch it.
+        $this->db->update('tl_nw_payment', ['created_at' => time() - 86400], ['id' => $payment->id]);
+        $this->service->reconcile();
+        $this->assertSame(PaymentStatus::Open, $this->repository->find($payment->id)->status);
+
+        $this->service->confirmManual($payment->id);
+        $this->assertSame(PaymentStatus::Paid, $this->repository->find($payment->id)->status);
+        $this->assertSame(1, $this->resolver->paidCalls);
+        $refund = $this->service->refund($payment->id, new Money(250), str_repeat('c', 64));
+        $this->assertTrue($refund->succeeded);
+        $this->assertSame(PaymentStatus::PartiallyRefunded, $this->repository->find($payment->id)->status);
+
+        $this->settings->saveOnSite(false, '');
+        $this->assertArrayNotHasKey('on_site', $this->service->methods());
+        $this->assertSame('', $this->settings->payPalMe());
+    }
+
     public function testCronConfirmsOldPaymentsAndLeavesFreshPaymentsAlone(): void
     {
         $client = $this->createMock(StripeClientInterface::class);

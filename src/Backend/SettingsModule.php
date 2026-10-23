@@ -9,6 +9,7 @@ use Contao\BackendTemplate;
 use Contao\BackendUser;
 use Contao\Input;
 use Contao\System;
+use Nordwerk\PaymentBundle\OnSite\PayPalMe;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Symfony\Component\HttpFoundation\RequestStack;
@@ -47,7 +48,11 @@ final class SettingsModule extends BackendModule
                 } else {
                     $key = Input::post('secretKey');
                     $secret = Input::post('webhookSecret');
+                    $payPalMe = Input::post('payPalMe');
+                    // Validated before anything is stored, so a typo does not save half the form.
+                    $payPalMe = PayPalMe::normalize(\is_string($payPalMe) ? $payPalMe : '');
                     $settings->save('1' === Input::post('bankEnabled'), '1' === Input::post('stripeEnabled'), '1' === Input::post('testMode'), \is_string($key) ? trim($key) : '', \is_string($secret) ? trim($secret) : '');
+                    $settings->saveOnSite('1' === Input::post('onSiteEnabled'), $payPalMe);
                     $notice = 'Einstellungen gespeichert.';
                 }
             } catch (\Throwable $exception) {
@@ -56,6 +61,6 @@ final class SettingsModule extends BackendModule
         }
         $data = $settings->stored();
         // Never pass ciphertext or plaintext secrets to the backend template.
-        $this->Template->setData(['values' => ['bankEnabled' => $data['bankEnabled'] ?? true, 'stripeEnabled' => $data['stripeEnabled'] ?? false, 'testMode' => $data['testMode'] ?? true], 'error' => $error, 'notice' => $notice]);
+        $this->Template->setData(['values' => ['bankEnabled' => $data['bankEnabled'] ?? true, 'stripeEnabled' => $data['stripeEnabled'] ?? false, 'testMode' => $data['testMode'] ?? true, 'onSiteEnabled' => $data['onSiteEnabled'] ?? false, 'payPalMe' => $settings->payPalMe()], 'error' => $error, 'notice' => $notice]);
     }
 }

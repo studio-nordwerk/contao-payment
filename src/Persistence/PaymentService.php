@@ -16,6 +16,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
+use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Psr\Log\LoggerInterface;
@@ -33,17 +34,21 @@ final readonly class PaymentService
         private PaymentSettings $settings,
         private iterable $resolvers,
         private LoggerInterface $logger,
+        private OnSiteProvider $onSite = new OnSiteProvider(),
     ) {
     }
 
     /**
+     * Payment on site is listed last; consumers offer it only where the customer
+     * comes by, e.g. for pickup.
+     *
      * @return array<string, string>
      */
     public function methods(): array
     {
         $methods = [];
 
-        foreach (['bank_transfer' => 'Vorkasse per Überweisung', 'stripe' => 'Online bezahlen (Stripe)'] as $id => $label) {
+        foreach (['bank_transfer' => 'Vorkasse per Überweisung', 'stripe' => 'Online bezahlen (Stripe)', 'on_site' => 'Bezahlung vor Ort'] as $id => $label) {
             if ($this->settings->enabled($id)) {
                 $methods[$id] = $label;
             }
@@ -57,6 +62,7 @@ final readonly class PaymentService
         return match ($provider) {
             'bank_transfer' => $this->bank,
             'stripe' => $this->stripe,
+            'on_site' => $this->onSite,
             default => throw new \InvalidArgumentException('Unknown payment provider.'),
         };
     }
@@ -148,8 +154,8 @@ final readonly class PaymentService
     public function confirmManual(int $id): void
     {
         $payment = $this->repository->find($id);
-        if ('bank_transfer' !== $payment->provider) {
-            throw new \InvalidArgumentException('Nur Vorkasse kann manuell bestätigt werden.');
+        if (!\in_array($payment->provider, ['bank_transfer', 'on_site'], true)) {
+            throw new \InvalidArgumentException('Nur Vorkasse und Bezahlung vor Ort können manuell bestätigt werden.');
         }
         $this->apply($payment->provider, new PaymentEvent('manual:paid:'.$id, $id, $payment->reference, PaymentStatus::Paid, $payment->money, testMode: $payment->testMode));
     }
@@ -224,7 +230,7 @@ final readonly class PaymentService
             }
         }
 
-        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE status IN ('open', 'pending') AND created_at < ? AND provider_reference <> '' AND provider <> 'bank_transfer' ORDER BY checked_at, id LIMIT 100", [time() - 600]);
+        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE status IN ('open', 'pending') AND created_at < ? AND provider_reference <> '' AND provider NOT IN ('bank_transfer', 'on_site') ORDER BY checked_at, id LIMIT 100", [time() - 600]);
 
         foreach ($ids as $id) {
             try {

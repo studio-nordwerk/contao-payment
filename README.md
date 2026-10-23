@@ -1,6 +1,6 @@
 # Contao-Zahlungen
 
-`nordwerk/contao-payment-bundle` für PHP 8.3 und Contao ab 5.7.12. Anbieterneutrale Zahlungsnaht mit Vorkasse und gehostetem Stripe Checkout. Kartendaten bleiben bei Stripe. Der Mini-Shop nutzt das Bundle; Seminar folgt in P2.
+`nordwerk/contao-payment-bundle` für PHP 8.3 und Contao ab 5.7.12. Anbieterneutrale Zahlungsnaht mit Vorkasse, gehostetem Stripe Checkout und Bezahlung vor Ort. Kartendaten bleiben bei Stripe. Der Mini-Shop nutzt das Bundle; Seminar folgt in P2.
 
 ## Installation und Einrichtung
 
@@ -11,6 +11,8 @@ Unter **Inhalte → Zahlung einrichten** Vorkasse und/oder Stripe einschalten. V
 Schlüssel werden mit authentifizierter Sodium-Verschlüsselung gespeichert, abgeleitet aus Symfony `APP_SECRET`; die Eingabefelder bleiben leer. Leere Felder behalten vorhandene Werte. Bei Wechsel des Modus beide Schlüssel ersetzen. APP_SECRET sichern: ein Verlust oder Wechsel macht vorhandene verschlüsselte Schlüssel unlesbar. Die Einrichtung ist Administratoren vorbehalten.
 
 Optionale Overrides: `NW_PAYMENT_STRIPE_SECRET_KEY`, `NW_PAYMENT_STRIPE_WEBHOOK_SECRET`, `NW_PAYMENT_STRIPE_TEST_MODE` (`1`/`0`). Overrides gehören in die Laufzeitkonfiguration, niemals ins Repository. Der API-Endpunkt-Override `NW_PAYMENT_STRIPE_API_BASE` ist ausschließlich im Testmodus zulässig.
+
+**Bezahlung vor Ort** (bar oder PayPal) ist ausgeschaltet, bis sie unter **Zahlung einrichten** eingeschaltet wird. Der Mini-Shop bietet sie nur bei Abholung an. Mit einem PayPal.me-Link (z. B. `paypal.me/hofladen`) zeigen Bestätigungsmail und Danke-Seite einen QR-Code, der den Betrag schon enthält. Die Zahlung bleibt offen, bis sie unter **Zahlungen** oder in der Bestellung bestätigt wird; es gibt keine Zahlungserinnerung.
 
 ## Zahlungsablauf
 
@@ -24,7 +26,7 @@ Webhook: `POST /_nw/payment/webhook/{provider}`. Stripe-Signaturen werden über 
 
 Die Rückkehrseite `/_nw/payment/return/{token}` zeigt „Zahlung wird geprüft“ und lädt ohne JavaScript alle fünf Sekunden neu. Sie bestätigt niemals selbst eine Zahlung. Contao-Cron gleicht offene Zahlungen nach zehn Minuten beim Anbieter ab. Der Webserver muss Contao-Cron regelmäßig auslösen; alternativ das Contao-Cron-Framework über die CLI betreiben.
 
-**Inhalte → Zahlungen** bietet eine lesbare Liste und das unveränderliche Ereignisprotokoll (UTC). Vorkasse wird dort manuell bestätigt. **Erstatten** nimmt ganze Cent, höchstens den verbliebenen Betrag. Bei Vorkasse dokumentiert die Aktion eine bereits extern überwiesene Erstattung; sie löst keine Banküberweisung aus. Stripe-Erstattungen werden über die API ausgeführt. Wiederholtes Absenden derselben Aktion erzeugt keine weitere Erstattung.
+**Inhalte → Zahlungen** bietet eine lesbare Liste und das unveränderliche Ereignisprotokoll (UTC). Vorkasse und Bezahlung vor Ort werden dort manuell bestätigt. **Erstatten** nimmt ganze Cent, höchstens den verbliebenen Betrag. Bei Vorkasse dokumentiert die Aktion eine bereits extern überwiesene Erstattung; sie löst keine Banküberweisung aus. Stripe-Erstattungen werden über die API ausgeführt. Wiederholtes Absenden derselben Aktion erzeugt keine weitere Erstattung.
 
 ## Lokale Prüfung ohne Stripe-Netz
 

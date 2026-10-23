@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nordwerk\PaymentBundle\Settings;
 
 use Doctrine\DBAL\Connection;
+use Nordwerk\PaymentBundle\OnSite\PayPalMe;
 
 final readonly class PaymentSettings
 {
@@ -31,12 +32,38 @@ final readonly class PaymentSettings
         try {
             return match ($provider) {
                 'bank_transfer' => (bool) ($data['bankEnabled'] ?? true),
+                'on_site' => (bool) ($data['onSiteEnabled'] ?? false),
                 'stripe' => (bool) ($data['stripeEnabled'] ?? false) && '' !== $this->secretKey() && '' !== $this->webhookSecret(),
                 default => false,
             };
         } catch (\InvalidArgumentException|\RuntimeException) {
             return false;
         }
+    }
+
+    /**
+     * PayPal.me name for payments on site, '' without one.
+     */
+    public function payPalMe(): string
+    {
+        try {
+            return PayPalMe::normalize((string) ($this->stored()['payPalMe'] ?? ''));
+        } catch (\InvalidArgumentException) {
+            return '';
+        }
+    }
+
+    public function saveOnSite(bool $enabled, string $payPalMe): void
+    {
+        $name = PayPalMe::normalize($payPalMe);
+        $this->connection->transactional(
+            function () use ($enabled, $name): void {
+                $data = $this->lockedData();
+                $data['onSiteEnabled'] = $enabled;
+                $data['payPalMe'] = $name;
+                $this->persist($data);
+            },
+        );
     }
 
     public function testMode(): bool
