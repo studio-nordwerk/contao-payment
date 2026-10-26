@@ -275,10 +275,11 @@ final readonly class PaymentSettings
 
     /**
      * Creates the record on first use; its column defaults match self::SWITCHES.
+     * tstamp 0 keeps this unsaved state out of the versions.
      */
     public function ensureRecord(): void
     {
-        $this->connection->executeStatement('INSERT IGNORE INTO tl_nw_payment_settings (id, tstamp) VALUES (1, ?)', [time()]);
+        $this->connection->executeStatement('INSERT IGNORE INTO tl_nw_payment_settings (id, tstamp) VALUES (1, 0)');
     }
 
     private function secret(string $field, string $environment): string
