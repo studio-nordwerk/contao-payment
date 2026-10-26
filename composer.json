@@ -16,8 +16,12 @@
     "contao/core-bundle": "^5.7",
     "stripe/stripe-php": "^20.0"
   },
+  "require-dev": {
+    "contao/manager-plugin": "^2.0"
+  },
   "conflict": {
-    "contao/core-bundle": "<5.7.12"
+    "contao/core-bundle": "<5.7.12",
+    "contao/manager-plugin": "<2.0 || >=3.0"
   },
   "autoload": {
     "psr-4": {
