@@ -26,7 +26,7 @@ final class Plugin implements BundlePluginInterface, RoutingPluginInterface
         $path = __DIR__.'/../../config/routes.yaml';
         $loader = $resolver->resolve($path);
         if (false === $loader) {
-            throw new \RuntimeException('Cannot load mini shop routes.');
+            throw new \RuntimeException('Cannot load payment routes.');
         }
 
         return $loader->load($path);
