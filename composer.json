@@ -21,7 +21,8 @@
   },
   "conflict": {
     "contao/core-bundle": "<5.7.12",
-    "contao/manager-plugin": "<2.0 || >=3.0"
+    "contao/manager-plugin": "<2.0 || >=3.0",
+    "nordwerk/contao-mini-shop-bundle": "<0.7"
   },
   "autoload": {
     "psr-4": {
