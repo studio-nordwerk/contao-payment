@@ -16,14 +16,17 @@ final class PaymentSettingsWorkflowTest extends TestCase
 {
     private Connection $db;
     private PaymentSettings $settings;
-    private mixed $original;
+    /**
+     * @var array<string, mixed>|false
+     */
+    private array|false $original;
 
     protected function setUp(): void
     {
         $parts = parse_url((string) getenv('DATABASE_URL'));
         $this->assertIsArray($parts);
         $this->db = DriverManager::getConnection(['driver' => 'pdo_mysql', 'host' => $parts['host'] ?? 'db', 'user' => $parts['user'] ?? 'contao', 'password' => $parts['pass'] ?? 'contao', 'dbname' => ltrim($parts['path'] ?? '/contao', '/')]);
-        $this->original = $this->db->fetchOne('SELECT data FROM tl_nw_payment_settings WHERE id = 1');
+        $this->original = $this->db->fetchAssociative('SELECT * FROM tl_nw_payment_settings WHERE id = 1');
         $this->db->executeStatement('DELETE FROM tl_nw_payment_settings');
         $this->settings = new PaymentSettings($this->db, new SecretCipher((string) getenv('APP_SECRET')));
         $this->settings->save(true, true, true, 'sk_test_local_fixture', 'whsec_local_fixture');
@@ -35,7 +38,7 @@ final class PaymentSettingsWorkflowTest extends TestCase
     {
         $this->db->executeStatement('DELETE FROM tl_nw_payment_settings');
         if (false !== $this->original) {
-            $this->db->insert('tl_nw_payment_settings', ['id' => 1, 'tstamp' => time(), 'data' => $this->original]);
+            $this->db->insert('tl_nw_payment_settings', $this->original);
         }
         $this->db->close();
     }

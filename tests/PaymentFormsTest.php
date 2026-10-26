@@ -33,7 +33,7 @@ final class PaymentFormsTest extends TestCase
         ];
         $render = function (): string {
             ob_start();
-            include __DIR__.'/../Resources/contao/templates/backend/be_nw_payments.html5';
+            include __DIR__.'/../contao/templates/backend/be_nw_payments.html5';
 
             return (string) ob_get_clean();
         };
