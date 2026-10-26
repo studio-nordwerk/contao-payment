@@ -4,6 +4,7 @@
 /.prettierignore export-ignore
 /.env.example export-ignore
 /.github export-ignore
+/CLAUDE.md export-ignore
 /Makefile export-ignore
 /app export-ignore
 /compose.yaml export-ignore
