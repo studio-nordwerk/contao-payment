@@ -12,10 +12,10 @@ reset:
 check:
 	python3 scripts/check-package.py
 	docker compose exec -T php vendor/bin/ecs check --config=/workspace/ecs.php --no-progress-bar
-	docker compose exec -T php vendor/bin/twig-cs-fixer lint /workspace/templates /workspace/Resources/contao/templates
+	docker compose exec -T php vendor/bin/twig-cs-fixer lint /workspace/templates /workspace/contao/templates
 	docker compose exec -T php composer validate --strict /workspace/composer.json
 	docker compose exec -T php composer normalize --dry-run /workspace/composer.json
-	docker compose exec -T php php vendor/bin/contao-console lint:twig /workspace/templates /workspace/Resources/contao/templates
+	docker compose exec -T php php vendor/bin/contao-console lint:twig /workspace/templates /workspace/contao/templates
 	docker compose exec -T php php vendor/bin/contao-console lint:yaml --parse-tags /workspace/config /workspace/app/config /workspace/.github
 	docker compose exec -T php php vendor/bin/contao-console lint:container
 	docker compose exec -T -w /workspace php app/vendor/bin/phpstan analyse --configuration=phpstan.neon.dist

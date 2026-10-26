@@ -7,6 +7,6 @@ use Symplify\EasyCodingStandard\Config\ECSConfig;
 
 return ECSConfig::configure()
     ->withSets([SetList::CONTAO])
-    ->withPaths([__DIR__.'/src', __DIR__.'/Resources/contao', __DIR__.'/tests', __DIR__.'/scripts'])
+    ->withPaths([__DIR__.'/src', __DIR__.'/contao', __DIR__.'/tests', __DIR__.'/scripts'])
     ->withRootFiles()
 ;
