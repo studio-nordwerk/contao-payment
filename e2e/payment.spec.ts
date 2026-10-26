@@ -31,15 +31,18 @@ test("native payment backend, encrypted setup and return refresh", async ({ brow
     fullPage: true,
   });
   await page.goto("/contao?do=nw_payment_settings");
-  await page.getByLabel("Secret Key", { exact: true }).fill("sk_test_local_fixture");
-  await page.getByRole("button", { name: "Speichern", exact: true }).click();
-  await expect(page.getByText("Einstellungen gespeichert.")).toBeVisible();
-  await expect(page.getByLabel("Secret Key", { exact: true })).toHaveValue("");
+  // The module opens the one settings record in the standard edit form.
+  await expect(page).toHaveURL(/do=nw_payment_settings&act=edit&id=1/);
+  await page.locator("#ctrl_secretKey").fill("sk_test_local_fixture");
+  await page.locator("#save").click();
+  await expect(page.locator(".tl_error")).toHaveCount(0);
+  await expect(page.locator("#ctrl_secretKey")).toHaveValue("");
+  await page.getByRole("link", { name: "Webhook bei Stripe anlegen" }).click();
   await page.getByRole("button", { name: "Webhook bei Stripe anlegen" }).click();
   await expect(
     page.getByText("Webhook bei Stripe angelegt und Secret verschlüsselt gespeichert."),
   ).toBeVisible();
-  await expect(page.getByLabel("Webhook-Secret", { exact: true })).toHaveValue("");
+  await expect(page.locator("#ctrl_webhookSecret")).toHaveValue("");
   await page.screenshot({ path: "test-results/screenshots/settings.png", fullPage: true });
   await page.goto("/_nw/payment/return/" + "a".repeat(64));
   await expect(page.getByRole("heading", { name: "Zahlung wird geprüft" })).toBeVisible();

@@ -18,7 +18,7 @@ final class StripeWebhookRegistrationTest extends TestCase
         $parts = parse_url((string) getenv('DATABASE_URL'));
         $this->assertIsArray($parts);
         $db = DriverManager::getConnection(['driver' => 'pdo_mysql', 'host' => $parts['host'] ?? 'db', 'user' => $parts['user'] ?? 'contao', 'password' => $parts['pass'] ?? 'contao', 'dbname' => ltrim($parts['path'] ?? '/contao', '/')]);
-        $original = $db->fetchOne('SELECT data FROM tl_nw_payment_settings WHERE id = 1');
+        $original = $db->fetchAssociative('SELECT * FROM tl_nw_payment_settings WHERE id = 1');
         $db->executeStatement('DELETE FROM tl_nw_payment_settings');
 
         try {
@@ -71,7 +71,7 @@ final class StripeWebhookRegistrationTest extends TestCase
         } finally {
             $db->executeStatement('DELETE FROM tl_nw_payment_settings');
             if (false !== $original) {
-                $db->insert('tl_nw_payment_settings', ['id' => 1, 'tstamp' => time(), 'data' => $original]);
+                $db->insert('tl_nw_payment_settings', $original);
             }
             $db->close();
         }
