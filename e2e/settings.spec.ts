@@ -51,8 +51,12 @@ async function login(page: Page, username: string): Promise<void> {
 }
 
 test.afterAll(() => {
-  sql("DELETE FROM tl_user WHERE username IN ('payment-switches', 'payment-module-only')");
-  sql("DELETE FROM tl_user_group WHERE name IN ('payment-switches', 'payment-module-only')");
+  sql(
+    "DELETE FROM tl_user WHERE username IN ('payment-switches', 'payment-module-only', 'payment-bank-only', 'payment-no-update')",
+  );
+  sql(
+    "DELETE FROM tl_user_group WHERE name IN ('payment-switches', 'payment-module-only', 'payment-bank-only', 'payment-no-update')",
+  );
 });
 
 test("secrets stay out of the form, the show view and the versions", async ({ page }) => {
@@ -128,4 +132,41 @@ test("the module permission alone does not open the settings for editing", async
     expect(response!.status(), path).toBeGreaterThanOrEqual(400);
     await expect(page.locator("#ctrl_secretKey")).toHaveCount(0);
   }
+});
+
+test("restoring a version needs every versioned field, the webhook needs the update permission", async ({
+  page,
+}) => {
+  createUser(
+    "payment-bank-only",
+    ["nw_payment_settings"],
+    ["tl_nw_payment_settings::update"],
+    ["tl_nw_payment_settings::bankEnabled"],
+  );
+  await login(page, "payment-bank-only");
+  await page.goto("/contao?do=nw_payment_settings");
+  await expect(page.locator("input[name=bankEnabled][type=checkbox]")).toBeVisible();
+  const token = await page.locator("input[name=REQUEST_TOKEN]").first().inputValue();
+  const restore = await page.request.post("/contao?do=nw_payment_settings&act=edit&id=1", {
+    form: { FORM_SUBMIT: "tl_version", REQUEST_TOKEN: token, version: "1" },
+  });
+  expect(restore.status()).toBeGreaterThanOrEqual(400);
+  // In dev the reason is in a header; it must be the version guard, not e.g. the request token.
+  expect(
+    decodeURIComponent(restore.headers()["x-debug-exception"] ?? "Restoring a version"),
+  ).toContain("Restoring a version");
+
+  await page.context().clearCookies();
+  createUser(
+    "payment-no-update",
+    ["nw_payment_settings"],
+    [],
+    ["tl_nw_payment_settings::webhookSecret"],
+  );
+  await login(page, "payment-no-update");
+  const response = await page.goto("/contao?do=nw_payment_settings&key=webhook");
+  expect(response!.status()).toBeGreaterThanOrEqual(400);
+  expect(
+    decodeURIComponent(response!.headers()["x-debug-exception"] ?? "Stripe webhook"),
+  ).toContain("Stripe webhook");
 });

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nordwerk\PaymentBundle\Backend;
 
 use Contao\CoreBundle\DependencyInjection\Attribute\AsCallback;
+use Contao\CoreBundle\Exception\AccessDeniedException;
 use Contao\CoreBundle\Exception\RedirectResponseException;
 use Contao\CoreBundle\Security\ContaoCorePermissions;
 use Contao\DataContainer;
@@ -41,6 +42,15 @@ final readonly class SettingsDataContainer
         $action = $request->query->get('act');
         if (null !== $action && 'edit' !== $action) {
             return;
+        }
+        // Restoring a version writes all versioned fields without the field permission
+        // checks of the form.
+        if ($request->isMethod('POST') && 'tl_version' === $request->request->get('FORM_SUBMIT')) {
+            foreach ($GLOBALS['TL_DCA']['tl_nw_payment_settings']['fields'] as $field => $config) {
+                if (isset($config['inputType']) && false !== ($config['eval']['versionize'] ?? true) && !$this->security->isGranted(ContaoCorePermissions::USER_CAN_EDIT_FIELD_OF_TABLE, 'tl_nw_payment_settings::'.$field)) {
+                    throw new AccessDeniedException('Restoring a version of the payment settings requires access to all versioned fields.');
+                }
+            }
         }
         $this->settings->ensureRecord();
         if (null === $action) {
@@ -101,7 +111,7 @@ final readonly class SettingsDataContainer
     #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.stripeWebhook.input_field')]
     public function webhookLink(): string
     {
-        if (!$this->security->isGranted(ContaoCorePermissions::USER_CAN_EDIT_FIELD_OF_TABLE, 'tl_nw_payment_settings::webhookSecret')) {
+        if (!$this->security->isGranted(ContaoCorePermissions::USER_CAN_OPERATE_ON_TABLE, 'tl_nw_payment_settings::update') || !$this->security->isGranted(ContaoCorePermissions::USER_CAN_EDIT_FIELD_OF_TABLE, 'tl_nw_payment_settings::webhookSecret')) {
             return '';
         }
         $url = $this->router->generate('contao_backend', ['do' => 'nw_payment_settings', 'key' => 'webhook']);

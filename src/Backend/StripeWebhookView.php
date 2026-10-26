@@ -35,7 +35,9 @@ final readonly class StripeWebhookView
 
     public function run(): RedirectResponse|string
     {
-        if (!$this->security->isGranted(ContaoCorePermissions::USER_CAN_EDIT_FIELD_OF_TABLE, 'tl_nw_payment_settings::webhookSecret')) {
+        // The same permissions as saving the webhook secret in the form: table "update"
+        // plus the field.
+        if (!$this->security->isGranted(ContaoCorePermissions::USER_CAN_OPERATE_ON_TABLE, 'tl_nw_payment_settings::update') || !$this->security->isGranted(ContaoCorePermissions::USER_CAN_EDIT_FIELD_OF_TABLE, 'tl_nw_payment_settings::webhookSecret')) {
             throw new AccessDeniedException('Not enough permissions to register the Stripe webhook.');
         }
         $lang = $GLOBALS['TL_LANG']['tl_nw_payment_settings'];
