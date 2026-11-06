@@ -4,5 +4,5 @@ export default defineConfig({
   testDir: "./e2e",
   workers: 1,
   reporter: "list",
-  use: { baseURL: "http://127.0.0.1:8084" },
+  use: { launchOptions: { chromiumSandbox: !process.env.CI }, baseURL: "http://127.0.0.1:8084" },
 });
