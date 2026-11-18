@@ -11,6 +11,13 @@
 - [x] Lokaler Fake-Stripe, PHPUnit, Playwright, CI und Manager-Artefakt.
 - [x] Mini-Shop angebunden und Integration mit Seminar/Widerruf weiterhin grün.
 
+## Mollie (18.11.2026)
+
+- [x] Mollie als Anbieter `mollie` (Payments API v2, gehostete Seite), Einstellungen mit verschlüsseltem API-Key, Testmodus für alle Online-Anbieter, Moduswechsel verlangt nur die Schlüssel vorhandener Anbieter.
+- [x] Webhook ohne Signatur über API-Abruf, Status-Mapping, Erstattungen mit Cron-Abgleich, Abruf beim Rückkehren ohne Webhook, Fake-Mollie, Tests.
+- [ ] Chargebacks, Abonnements und Zahlungen in Währungen ohne Nachkommastellen sind nicht abgebildet.
+- [ ] Echter Mollie-Testmodus in öffentlich erreichbarer HTTPS-Testinstallation (Webhook, verzögerte Zahlarten, Erstattung).
+
 ## Offene Produktentscheidungen
 
 - Wie sollen Teilbeträge bei Bestellungen mit verschiedenen Steuersätzen auf Positionen verteilt werden? Bis zur Entscheidung: finanzielle Erstattung zulässig, Storno-Beleg zur Steuerzuordnung markiert. Volle Erstattung kann den vollständigen Originalbeleg stornieren.

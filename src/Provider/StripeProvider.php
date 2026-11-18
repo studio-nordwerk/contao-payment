@@ -14,12 +14,13 @@ use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
+use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Stripe\Exception\SignatureVerificationException;
 use Stripe\Webhook;
 use Symfony\Component\HttpFoundation\Request;
 
-final readonly class StripeProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface
+final readonly class StripeProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface, ResumableCheckoutInterface
 {
     public const EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', 'checkout.session.expired', 'charge.refunded', 'refund.created', 'refund.updated', 'refund.failed'];
 

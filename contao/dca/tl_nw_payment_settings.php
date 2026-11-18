@@ -35,7 +35,7 @@ $GLOBALS['TL_DCA']['tl_nw_payment_settings'] = [
         'operations' => ['edit', 'show'],
     ],
     'palettes' => [
-        'default' => '{provider_legend},bankEnabled,stripeEnabled,testMode;{onsite_legend},onSiteEnabled,payPalMe;{stripe_legend},secretKey,webhookSecret,stripeWebhook',
+        'default' => '{provider_legend},bankEnabled,stripeEnabled,testMode;{onsite_legend},onSiteEnabled,payPalMe;{stripe_legend},secretKey,webhookSecret,stripeWebhook;{mollie_legend},mollieEnabled,mollieApiKey',
     ],
     'fields' => [
         'id' => ['sql' => 'int unsigned NOT NULL auto_increment'],
@@ -45,13 +45,19 @@ $GLOBALS['TL_DCA']['tl_nw_payment_settings'] = [
         // the next minor release.
         'data' => ['eval' => ['versionize' => false, 'doNotShow' => true], 'sql' => 'text NULL'],
         'bankEnabled' => ['inputType' => 'checkbox', 'eval' => ['tl_class' => 'w50 m12'], 'sql' => "char(1) NOT NULL default '1'"],
-        // Mode and Stripe switch belong to the current credentials (see applyChanges()),
-        // so restoring an older version must not change them.
+        // Mode and the Stripe/Mollie switches belong to the current credentials (see
+        // applyChanges()), so restoring an older version must not change them.
         'stripeEnabled' => ['inputType' => 'checkbox', 'eval' => ['versionize' => false, 'tl_class' => 'w50 m12'], 'sql' => "char(1) NOT NULL default ''"],
         'testMode' => ['inputType' => 'checkbox', 'eval' => ['versionize' => false, 'tl_class' => 'w50 m12'], 'sql' => "char(1) NOT NULL default '1'"],
+        'mollieEnabled' => ['inputType' => 'checkbox', 'eval' => ['versionize' => false, 'tl_class' => 'w50 m12'], 'sql' => "char(1) NOT NULL default ''"],
         'onSiteEnabled' => ['inputType' => 'checkbox', 'eval' => ['tl_class' => 'w50 m12'], 'sql' => "char(1) NOT NULL default ''"],
         'payPalMe' => ['inputType' => 'text', 'eval' => ['maxlength' => 255, 'decodeEntities' => true, 'placeholder' => 'paypal.me/IhrName', 'tl_class' => 'w50'], 'sql' => "varchar(255) NOT NULL default ''"],
         'secretKey' => [
+            'inputType' => 'text',
+            'eval' => ['hideInput' => true, 'doNotSaveEmpty' => true, 'versionize' => false, 'autocomplete' => 'new-password', 'decodeEntities' => true, 'tl_class' => 'w50'],
+            'sql' => 'text NULL',
+        ],
+        'mollieApiKey' => [
             'inputType' => 'text',
             'eval' => ['hideInput' => true, 'doNotSaveEmpty' => true, 'versionize' => false, 'autocomplete' => 'new-password', 'decodeEntities' => true, 'tl_class' => 'w50'],
             'sql' => 'text NULL',

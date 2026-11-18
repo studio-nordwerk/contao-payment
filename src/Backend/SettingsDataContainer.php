@@ -64,6 +64,7 @@ final readonly class SettingsDataContainer
      */
     #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.secretKey.load')]
     #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.webhookSecret.load')]
+    #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.mollieApiKey.load')]
     public function hideSecret(): string
     {
         return '';
@@ -86,8 +87,9 @@ final readonly class SettingsDataContainer
     }
 
     /**
-     * Rules that span several fields (mode and key, Stripe only with both secrets)
-     * and encryption of the secrets. Nothing is stored if a rule fails.
+     * Rules that span several fields (mode and keys, Stripe only with both secrets,
+     * Mollie only with its key) and encryption of the secrets. Nothing is stored if a
+     * rule fails.
      *
      * @param array<string, mixed> $values
      *
@@ -100,7 +102,7 @@ final readonly class SettingsDataContainer
             $update = $this->settings->applyChanges($dc->getCurrentRecord() ?? [], $values);
             // Never let a submitted plaintext secret through; applyChanges() returns the
             // encrypted value.
-            unset($values['secretKey'], $values['webhookSecret']);
+            unset($values['secretKey'], $values['webhookSecret'], $values['mollieApiKey']);
 
             return [...$values, ...$update];
         } catch (SettingsException $exception) {

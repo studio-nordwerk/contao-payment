@@ -21,3 +21,4 @@
 /tests export-ignore
 /tsconfig.json export-ignore
 /vite.config.ts export-ignore
+/pnpm-workspace.yaml export-ignore

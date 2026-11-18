@@ -10,6 +10,8 @@ services:
       $appSecret: "%kernel.secret%"
   Nordwerk\PaymentBundle\Provider\StripeClientInterface:
     alias: Nordwerk\PaymentBundle\Provider\StripeClient
+  Nordwerk\PaymentBundle\Provider\MollieClientInterface:
+    alias: Nordwerk\PaymentBundle\Provider\MollieClient
   Nordwerk\PaymentBundle\Settings\PaymentSettings:
     public: true
   Nordwerk\PaymentBundle\Persistence\PaymentService:
@@ -17,6 +19,8 @@ services:
     arguments:
       $resolvers: !tagged_iterator nordwerk.payment.payable_resolver
   Nordwerk\PaymentBundle\Provider\StripeProvider:
+    public: true
+  Nordwerk\PaymentBundle\Provider\MollieProvider:
     public: true
   Nordwerk\PaymentBundle\Persistence\PaymentRepository:
     public: true

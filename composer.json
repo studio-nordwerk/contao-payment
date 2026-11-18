@@ -6,7 +6,8 @@
   "keywords": [
     "contao",
     "payment",
-    "stripe"
+    "stripe",
+    "mollie"
   ],
   "require": {
     "php": "^8.3",
@@ -14,7 +15,8 @@
     "ext-mbstring": "*",
     "chillerlan/php-qrcode": "^5.0",
     "contao/core-bundle": "^5.7",
-    "stripe/stripe-php": "^20.0"
+    "stripe/stripe-php": "^20.0",
+    "symfony/http-client": "^7.4"
   },
   "require-dev": {
     "contao/manager-plugin": "^2.0"

@@ -8,6 +8,7 @@ use Doctrine\DBAL\Connection;
 use Nordwerk\PaymentBundle\Domain\CheckoutResult;
 use Nordwerk\PaymentBundle\Domain\Money;
 use Nordwerk\PaymentBundle\Domain\PayableResolverInterface;
+use Nordwerk\PaymentBundle\Domain\Payment;
 use Nordwerk\PaymentBundle\Domain\PaymentEvent;
 use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
@@ -15,7 +16,9 @@ use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
+use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
+use Nordwerk\PaymentBundle\Provider\MollieProvider;
 use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -35,6 +38,7 @@ final readonly class PaymentService
         private iterable $resolvers,
         private LoggerInterface $logger,
         private OnSiteProvider $onSite = new OnSiteProvider(),
+        private MollieProvider|null $mollie = null,
     ) {
     }
 
@@ -48,7 +52,7 @@ final readonly class PaymentService
     {
         $methods = [];
 
-        foreach (['bank_transfer' => 'Vorkasse per Überweisung', 'stripe' => 'Online bezahlen (Stripe)', 'on_site' => 'Bezahlung vor Ort'] as $id => $label) {
+        foreach (['bank_transfer' => 'Vorkasse per Überweisung', 'stripe' => 'Online bezahlen (Stripe)', 'mollie' => 'Online bezahlen (Mollie)', 'on_site' => 'Bezahlung vor Ort'] as $id => $label) {
             if ($this->settings->enabled($id)) {
                 $methods[$id] = $label;
             }
@@ -62,6 +66,7 @@ final readonly class PaymentService
         return match ($provider) {
             'bank_transfer' => $this->bank,
             'stripe' => $this->stripe,
+            'mollie' => $this->mollie ?? throw new \InvalidArgumentException('Unknown payment provider.'),
             'on_site' => $this->onSite,
             default => throw new \InvalidArgumentException('Unknown payment provider.'),
         };
@@ -85,7 +90,9 @@ final readonly class PaymentService
                     return new CheckoutResult($payment->reference, $origin.'/_nw/payment/return/'.$payment->token);
                 }
                 if ('' !== $payment->reference) {
-                    return 'stripe' === $provider ? $this->stripe->resumeCheckout(new PaymentRequest($payment, $origin.'/_nw/payment/return/'.$payment->token, $description)) : new CheckoutResult($payment->reference);
+                    $resumable = $this->provider($provider);
+
+                    return $resumable instanceof ResumableCheckoutInterface ? $resumable->resumeCheckout(new PaymentRequest($payment, $origin.'/_nw/payment/return/'.$payment->token, $description)) : new CheckoutResult($payment->reference);
                 }
                 $result = $this->provider($provider)->createCheckout(new PaymentRequest($payment, $origin.'/_nw/payment/return/'.$payment->token, $description));
                 $this->connection->update('tl_nw_payment', ['provider_reference' => $result->reference, 'updated_at' => time()], ['id' => $payment->id]);
@@ -166,8 +173,8 @@ final readonly class PaymentService
             throw new \InvalidArgumentException('Invalid refund operation.');
         }
 
-        if ($this->connection->isTransactionActive() && 'stripe' === $this->repository->find($id)->provider) {
-            throw new \LogicException('Stripe refunds require an independently committed operation.');
+        if ($this->connection->isTransactionActive() && \in_array($this->repository->find($id)->provider, ['stripe', 'mollie'], true)) {
+            throw new \LogicException('Stripe and Mollie refunds require an independently committed operation.');
         }
 
         // Reserve under the payment lock and commit BEFORE any money can move.
@@ -214,7 +221,7 @@ final readonly class PaymentService
 
     public function reconcile(): void
     {
-        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider = 'stripe' AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.tstamp, r.id LIMIT 100");
+        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider IN ('stripe', 'mollie') AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.tstamp, r.id LIMIT 100");
 
         foreach ($refunds as $refund) {
             try {
@@ -222,8 +229,12 @@ final readonly class PaymentService
                     $payment = $this->repository->find((int) $refund['payment_id']);
                     $this->refund($payment->id, new Money((int) $refund['amount'], $payment->money->currency), (string) $refund['operation_token']);
                 } else {
-                    $event = $this->stripe->refundEvent('refund-fetch:'.$refund['id'].':'.bin2hex(random_bytes(16)), (string) $refund['provider_reference']);
-                    $this->apply('stripe', $event);
+                    $payment = $this->repository->find((int) $refund['payment_id']);
+                    $eventId = 'refund-fetch:'.$refund['id'].':'.bin2hex(random_bytes(16));
+                    $event = 'mollie' === $payment->provider
+                        ? ($this->mollie ?? throw new \LogicException('Mollie is not available.'))->refundEvent($eventId, $payment, (string) $refund['provider_reference'])
+                        : $this->stripe->refundEvent($eventId, (string) $refund['provider_reference']);
+                    $this->apply($payment->provider, $event);
                 }
             } catch (\Throwable $exception) {
                 $this->logger->error('Refund reconciliation deferred.', ['payment_id' => (int) $refund['payment_id'], 'failure_type' => $exception::class]);
@@ -246,5 +257,33 @@ final readonly class PaymentService
                 $this->logger->error('Payment reconciliation deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
             }
         }
+    }
+
+    /**
+     * Mollie payments that are still open or pending are read from the API when the
+     * customer returns, so shops without a reachable webhook (local, behind a
+     * firewall) do not wait for the cron. The state comes from Mollie, never from the
+     * browser; at most every five seconds per payment.
+     */
+    public function refreshFromProvider(Payment $payment): Payment
+    {
+        if ('mollie' !== $payment->provider || null === $this->mollie || '' === $payment->reference || !\in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true)) {
+            return $payment;
+        }
+        $now = time();
+        // Claims the slot atomically, so parallel reloads do not all call the API.
+        if (1 !== $this->connection->executeStatement('UPDATE tl_nw_payment SET checked_at = ? WHERE id = ? AND checked_at <= ?', [$now, $payment->id, $now - 5])) {
+            return $payment;
+        }
+
+        try {
+            $this->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        } catch (\Throwable $exception) {
+            $this->logger->error('Mollie status check on return deferred.', ['payment_id' => $payment->id, 'failure_type' => $exception::class]);
+
+            return $payment;
+        }
+
+        return $this->repository->find($payment->id);
     }
 }
