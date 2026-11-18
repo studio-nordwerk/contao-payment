@@ -5,7 +5,7 @@ declare(strict_types=1);
 use Contao\DC_Table;
 
 $GLOBALS['TL_DCA']['tl_nw_payment'] = [
-    'config' => ['dataContainer' => DC_Table::class, 'closed' => true, 'notEditable' => true, 'notDeletable' => true, 'notCopyable' => true, 'notCreatable' => true, 'sql' => ['keys' => ['id' => 'primary', 'payable_type,payable_id' => 'unique', 'return_token' => 'unique', 'status,created_at' => 'index']]],
+    'config' => ['dataContainer' => DC_Table::class, 'closed' => true, 'notEditable' => true, 'notDeletable' => true, 'notCopyable' => true, 'notCreatable' => true, 'sql' => ['keys' => ['id' => 'primary', 'payable_type,payable_id' => 'unique', 'return_token' => 'unique', 'status,created_at' => 'index', 'provider,provider_reference' => 'index']]],
     'fields' => [
         'id' => ['sql' => 'int unsigned NOT NULL auto_increment'],
         'tstamp' => ['sql' => 'int unsigned NOT NULL default 0'],

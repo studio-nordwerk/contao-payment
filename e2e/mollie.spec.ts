@@ -36,7 +36,8 @@ function startPayment(payable: string, cents: number): { id: number; redirect: s
     $parts = parse_url((string) getenv('DATABASE_URL'));
     $db = \\Doctrine\\DBAL\\DriverManager::getConnection(['driver'=>'pdo_mysql','host'=>$parts['host'],'user'=>$parts['user'],'password'=>$parts['pass'],'dbname'=>ltrim($parts['path'],'/')]);
     $settings = new \\Nordwerk\\PaymentBundle\\Settings\\PaymentSettings($db, new \\Nordwerk\\PaymentBundle\\Settings\\SecretCipher((string) getenv('APP_SECRET')));
-    $mollie = new \\Nordwerk\\PaymentBundle\\Provider\\MollieProvider(new \\Nordwerk\\PaymentBundle\\Provider\\MollieClient($settings, \\Symfony\\Component\\HttpClient\\HttpClient::create()), $settings);
+    $routes = new \\Symfony\\Component\\Routing\\RouteCollection(); $routes->add('nw_payment_webhook', new \\Symfony\\Component\\Routing\\Route('/_nw/payment/webhook/{provider}'));
+    $mollie = new \\Nordwerk\\PaymentBundle\\Provider\\MollieProvider(new \\Nordwerk\\PaymentBundle\\Provider\\MollieClient($settings, \\Symfony\\Component\\HttpClient\\HttpClient::create()), $settings, new \\Symfony\\Component\\Routing\\Generator\\UrlGenerator($routes, new \\Symfony\\Component\\Routing\\RequestContext('', 'GET', '${new URL(origin).hostname}', 'http')));
     $repository = new \\Nordwerk\\PaymentBundle\\Persistence\\PaymentRepository($db);
     $stripe = new \\Nordwerk\\PaymentBundle\\Provider\\StripeProvider(new \\Nordwerk\\PaymentBundle\\Provider\\StripeClient($settings), $settings);
     $service = new \\Nordwerk\\PaymentBundle\\Persistence\\PaymentService($db, $repository, new \\Nordwerk\\PaymentBundle\\Provider\\BankTransferProvider(), $stripe, $settings, [], new \\Psr\\Log\\NullLogger(), mollie: $mollie);

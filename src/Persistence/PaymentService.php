@@ -86,6 +86,12 @@ final readonly class PaymentService
                 if ($payment->provider !== $provider || !$payment->money->equals($money)) {
                     throw new \InvalidArgumentException('Payment retry does not match original checkout.');
                 }
+                // One payment per payable: a payment of the other mode must not be reused (a
+                // paid test payment would count as paid in live mode), and none is created next
+                // to it.
+                if (\in_array($provider, ['stripe', 'mollie'], true) && $payment->testMode !== $this->settings->testMode()) {
+                    throw new \InvalidArgumentException('Die vorhandene Zahlung wurde im '.($payment->testMode ? 'Test' : 'Live').'modus angelegt und passt nicht zum aktuellen Modus. Bitte eine neue Zahlung für diesen Bezug anlegen lassen.');
+                }
                 if (PaymentStatus::Open !== $payment->status) {
                     return new CheckoutResult($payment->reference, $origin.'/_nw/payment/return/'.$payment->token);
                 }
@@ -197,8 +203,9 @@ final readonly class PaymentService
             },
         );
 
-        return $this->connection->transactional(
-            function () use ($id, $money, $operation): RefundResult {
+        $rejected = null;
+        $result = $this->connection->transactional(
+            function () use ($id, $money, $operation, &$rejected): RefundResult|null {
                 $payment = $this->repository->find($id, true);
                 $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ? FOR UPDATE', [$operation]);
                 if (false === $existing) {
@@ -207,7 +214,21 @@ final readonly class PaymentService
                 if ('' !== $existing['provider_reference']) {
                     return new RefundResult((string) $existing['provider_reference'], (bool) $existing['succeeded'], (bool) $existing['succeeded'] ? RefundStatus::Succeeded : RefundStatus::from((string) $existing['status']));
                 }
-                $result = $this->provider($payment->provider)->refund($payment, $money, $operation);
+                if ('failed' === $existing['status']) {
+                    $rejected = new \InvalidArgumentException('Erstattung wurde vom Anbieter abgelehnt: '.$existing['reason']);
+
+                    return null;
+                }
+
+                try {
+                    $result = $this->provider($payment->provider)->refund($payment, $money, $operation);
+                } catch (\InvalidArgumentException $exception) {
+                    // The provider definitively refused the request: keep that, free the reservation.
+                    $this->connection->update('tl_nw_payment_refund', ['status' => RefundStatus::Failed->value, 'reason' => mb_substr($exception->getMessage(), 0, 255), 'tstamp' => time()], ['operation_token' => $operation]);
+                    $rejected = new \InvalidArgumentException('Erstattung wurde vom Anbieter abgelehnt.', 0, $exception);
+
+                    return null;
+                }
                 $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0, 'status' => $result->status->value], ['operation_token' => $operation]);
                 if ($result->succeeded) {
                     $total = (int) $existing['base_refunded_amount'] + $money->cents;
@@ -217,14 +238,22 @@ final readonly class PaymentService
                 return $result;
             },
         );
+        // Thrown after the commit, so the rejection stays recorded.
+        if (null !== $rejected) {
+            throw $rejected;
+        }
+
+        return $result ?? throw new \RuntimeException('Refund operation missing.');
     }
 
     public function reconcile(): void
     {
-        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider IN ('stripe', 'mollie') AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.tstamp, r.id LIMIT 100");
+        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider IN ('stripe', 'mollie') AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.checked_at, r.id LIMIT 100");
 
         foreach ($refunds as $refund) {
             try {
+                // Whatever happens next, the others get their turn first the next time.
+                $this->connection->update('tl_nw_payment_refund', ['checked_at' => time()], ['id' => (int) $refund['id']]);
                 if ('' === $refund['provider_reference']) {
                     $payment = $this->repository->find((int) $refund['payment_id']);
                     $this->refund($payment->id, new Money((int) $refund['amount'], $payment->money->currency), (string) $refund['operation_token']);
@@ -257,6 +286,8 @@ final readonly class PaymentService
                 $this->logger->error('Payment reconciliation deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
             }
         }
+
+        $this->reconcileMolliePaid();
     }
 
     /**
@@ -285,5 +316,35 @@ final readonly class PaymentService
         }
 
         return $this->repository->find($payment->id);
+    }
+
+    /**
+     * Refunds made in the Mollie dashboard arrive without a webhook when none is
+     * reachable. A small rotating set of paid Mollie payments is therefore read again
+     * from time to time.
+     */
+    private function reconcileMolliePaid(): void
+    {
+        if (null === $this->mollie) {
+            return;
+        }
+        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE provider = 'mollie' AND status IN ('paid', 'partially_refunded') AND provider_reference <> '' AND test_mode = ? AND created_at > ? AND checked_at < ? ORDER BY checked_at, id LIMIT 20", [$this->settings->testMode() ? 1 : 0, time() - 180 * 86400, time() - 600]);
+
+        foreach ($ids as $id) {
+            try {
+                $this->connection->update('tl_nw_payment', ['checked_at' => time()], ['id' => (int) $id]);
+                $this->apply('mollie', $this->mollie->fetchSnapshot($this->repository->find((int) $id)));
+            } catch (\Throwable $exception) {
+                $this->logger->error('Mollie refund check deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
+            }
+        }
+    }
+
+    /**
+     * Whether a payment of this provider has this provider reference (indexed).
+     */
+    public function hasReference(string $provider, string $reference): bool
+    {
+        return false !== $this->connection->fetchOne('SELECT id FROM tl_nw_payment WHERE provider = ? AND provider_reference = ? LIMIT 1', [$provider, $reference]);
     }
 }

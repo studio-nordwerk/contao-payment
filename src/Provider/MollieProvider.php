@@ -17,6 +17,7 @@ use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 
 /**
  * Mollie Payments API v2 with the hosted Mollie checkout. Mollie webhooks carry no
@@ -25,29 +26,26 @@ use Symfony\Component\HttpFoundation\Request;
  */
 final readonly class MollieProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface, ResumableCheckoutInterface
 {
-    private const PAYMENT_ID = '/^tr_[A-Za-z0-9]{4,64}$/D';
+    public const PAYMENT_ID = '/^tr_[A-Za-z0-9]{4,64}$/D';
     private const REFUND_ID = '/^re_[A-Za-z0-9]{4,64}$/D';
 
     public function __construct(
         private MollieClientInterface $client,
         private PaymentSettings $settings,
+        private UrlGeneratorInterface $router,
     ) {
     }
 
     /**
-     * Mollie rejects a webhookUrl it cannot reach. Returns null for local and
-     * private hosts.
+     * Mollie rejects a webhookUrl it cannot reach: false for local and private hosts.
      */
-    public static function webhookUrl(string $returnUrl): string|null
+    public static function isPublicUrl(string $url): bool
     {
-        $parts = parse_url($returnUrl);
+        $parts = parse_url($url);
         $scheme = \is_array($parts) ? ($parts['scheme'] ?? '') : '';
         $host = \is_array($parts) ? strtolower(trim($parts['host'] ?? '', '[]')) : '';
-        if (!\in_array($scheme, ['http', 'https'], true) || !self::publicHost($host)) {
-            return null;
-        }
 
-        return $scheme.'://'.($parts['host'] ?? '').(isset($parts['port']) ? ':'.$parts['port'] : '').'/_nw/payment/webhook/mollie';
+        return \in_array($scheme, ['http', 'https'], true) && self::publicHost($host);
     }
 
     public function createCheckout(PaymentRequest $request): CheckoutResult
@@ -60,8 +58,9 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
             'cancelUrl' => $request->returnUrl.'?canceled=1',
             'metadata' => ['payment_id' => (string) $payment->id],
         ];
-        $webhook = self::webhookUrl($request->returnUrl);
-        if (null !== $webhook) {
+        // From the router, so installations in a subdirectory get their base path.
+        $webhook = $this->router->generate('nw_payment_webhook', ['provider' => 'mollie'], UrlGeneratorInterface::ABSOLUTE_URL);
+        if (self::isPublicUrl($webhook)) {
             $body['webhookUrl'] = $webhook;
         }
         $mollie = $this->client->request('post', '/payments', $body, 'checkout:'.$payment->id);
@@ -104,6 +103,13 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
 
     public function refund(Payment $payment, Money $money, string $operation): RefundResult
     {
+        // The idempotency key of Mollie only lives for a limited time. If an earlier
+        // attempt got through but its answer was lost, the refund is already there:
+        // adopt it. When the list cannot be read the exception stops the replay.
+        $adopted = $this->existingRefund($payment, $money, $operation);
+        if (null !== $adopted) {
+            return $adopted;
+        }
         $refund = $this->client->request(
             'post',
             '/payments/'.rawurlencode($payment->reference).'/refunds',
@@ -213,15 +219,65 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
     }
 
     /**
-     * Sum of the refunds with status "refunded" of one payment (all pages).
+     * Any failure here is "unclear" and therefore a RuntimeException: an
+     * InvalidArgumentException would be read as a definitive rejection of the refund.
+     */
+    private function existingRefund(Payment $payment, Money $money, string $operation): RefundResult|null
+    {
+        try {
+            foreach ($this->listRefunds($payment->reference) as $existing) {
+                if (($existing['metadata']['operation_token'] ?? null) !== $operation) {
+                    continue;
+                }
+                if (($existing['metadata']['payment_id'] ?? null) !== (string) $payment->id || !MollieAmount::parse($existing['amount'] ?? null)->equals($money)) {
+                    throw new \RuntimeException('A Mollie refund with this operation exists but does not match.');
+                }
+                $status = self::refundStatus($existing);
+
+                return new RefundResult((string) $existing['id'], RefundStatus::Succeeded === $status, $status);
+            }
+        } catch (\InvalidArgumentException $exception) {
+            throw new \RuntimeException('Mollie refunds could not be read.', 0, $exception);
+        }
+
+        return null;
+    }
+
+    /**
+     * Sum of the refunds with status "refunded" of one payment.
      */
     private function refundedCents(string $id, Money $total): int
     {
         $sum = 0;
+
+        foreach ($this->listRefunds($id) as $refund) {
+            $amount = MollieAmount::parse($refund['amount'] ?? null);
+            if ($amount->currency !== $total->currency) {
+                throw new \InvalidArgumentException('Mollie refund currency mismatch.');
+            }
+            if ('refunded' === ($refund['status'] ?? null)) {
+                $sum += $amount->cents;
+            }
+        }
+        if ($sum > $total->cents) {
+            throw new \InvalidArgumentException('Mollie refunds exceed the payment amount.');
+        }
+
+        return $sum;
+    }
+
+    /**
+     * All refunds of a payment, page by page.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function listRefunds(string $id): array
+    {
+        $all = [];
         $from = null;
 
         for ($page = 0; $page < 20; ++$page) {
-            $list = $this->client->request('get', '/payments/'.$id.'/refunds', ['limit' => 250] + (null === $from ? [] : ['from' => $from]));
+            $list = $this->client->request('get', '/payments/'.rawurlencode($id).'/refunds', ['limit' => 250] + (null === $from ? [] : ['from' => $from]));
             $refunds = $list['_embedded']['refunds'] ?? [];
             if (!\is_array($refunds)) {
                 throw new \InvalidArgumentException('Invalid Mollie refund list.');
@@ -231,21 +287,11 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
                 if (!\is_array($refund) || !\is_string($refund['id'] ?? null)) {
                     throw new \InvalidArgumentException('Invalid Mollie refund.');
                 }
-                $amount = MollieAmount::parse($refund['amount'] ?? null);
-                if ($amount->currency !== $total->currency) {
-                    throw new \InvalidArgumentException('Mollie refund currency mismatch.');
-                }
-                if ('refunded' === ($refund['status'] ?? null)) {
-                    $sum += $amount->cents;
-                }
+                $all[] = $refund;
                 $from = $refund['id'];
             }
             if (!isset($list['_links']['next']['href']) || [] === $refunds) {
-                if ($sum > $total->cents) {
-                    throw new \InvalidArgumentException('Mollie refunds exceed the payment amount.');
-                }
-
-                return $sum;
+                return $all;
             }
         }
 

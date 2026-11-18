@@ -65,28 +65,28 @@ final class MollieAmountTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, string|null}>
+     * @return iterable<string, array{string, bool}>
      */
-    public static function origins(): iterable
+    public static function urls(): iterable
     {
-        yield 'public https' => ['https://shop.example/_nw/payment/return/abc', 'https://shop.example/_nw/payment/webhook/mollie'];
-        yield 'public with port' => ['https://shop.example:8443/_nw/payment/return/abc', 'https://shop.example:8443/_nw/payment/webhook/mollie'];
-        yield 'public ip' => ['https://8.8.8.8/x', 'https://8.8.8.8/_nw/payment/webhook/mollie'];
-        yield 'localhost' => ['http://localhost:8084/x', null];
-        yield 'subdomain of localhost' => ['https://shop.localhost/x', null];
-        yield '.test domain' => ['https://shop.test/x', null];
-        yield 'loopback' => ['http://127.0.0.1:8084/x', null];
-        yield 'ipv6 loopback' => ['http://[::1]:8084/x', null];
-        yield 'private 192.168' => ['http://192.168.1.20/x', null];
-        yield 'private 10' => ['http://10.0.0.5/x', null];
-        yield 'private 172.16' => ['http://172.16.0.5/x', null];
-        yield 'docker service name' => ['http://caddy/x', null];
-        yield 'no host' => ['/relative', null];
+        yield 'public https' => ['https://shop.example/_nw/payment/webhook/mollie', true];
+        yield 'public with port' => ['https://shop.example:8443/x', true];
+        yield 'public ip' => ['https://8.8.8.8/x', true];
+        yield 'localhost' => ['http://localhost:8084/x', false];
+        yield 'subdomain of localhost' => ['https://shop.localhost/x', false];
+        yield '.test domain' => ['https://shop.test/x', false];
+        yield 'loopback' => ['http://127.0.0.1:8084/x', false];
+        yield 'ipv6 loopback' => ['http://[::1]:8084/x', false];
+        yield 'private 192.168' => ['http://192.168.1.20/x', false];
+        yield 'private 10' => ['http://10.0.0.5/x', false];
+        yield 'private 172.16' => ['http://172.16.0.5/x', false];
+        yield 'docker service name' => ['http://caddy/x', false];
+        yield 'no host' => ['/relative', false];
     }
 
-    #[DataProvider('origins')]
-    public function testWebhookUrlOnlyForPublicHosts(string $returnUrl, string|null $expected): void
+    #[DataProvider('urls')]
+    public function testWebhookUrlOnlyForPublicHosts(string $url, bool $public): void
     {
-        $this->assertSame($expected, MollieProvider::webhookUrl($returnUrl));
+        $this->assertSame($public, MollieProvider::isPublicUrl($url));
     }
 }

@@ -147,6 +147,79 @@ final class MollieSettingsTest extends TestCase
         $this->assertSame('live_local_fixture', $this->cipher->decrypt($update['mollieApiKey']));
     }
 
+    public function testModeAndKeyCannotChangeWhileMolliePaymentsOrRefundsAreOpen(): void
+    {
+        $this->settings->save(true, false, true, '', '', true, 'test_local_fixture');
+        $open = $this->insertPayment('mollie', 1, 'open');
+
+        try {
+            foreach ([['mode', fn () => $this->settings->save(true, false, false, '', '', null, 'live_local_fixture')], ['key', fn () => $this->settings->save(true, false, true, '', '', null, 'test_other_account')]] as [$what, $change]) {
+                try {
+                    $change();
+                    $this->fail('The '.$what.' changed with an open payment.');
+                } catch (SettingsException $exception) {
+                    $this->assertSame('openPaymentsMollie', $exception->reason);
+                }
+            }
+            $this->assertTrue($this->settings->testMode());
+            $this->assertSame('test_local_fixture', $this->settings->mollieApiKey());
+
+            // Settled payments do not matter, an unfinished refund does.
+            $this->db->update('tl_nw_payment', ['status' => 'paid'], ['id' => $open]);
+            $this->db->insert('tl_nw_payment_refund', ['tstamp' => time(), 'created_at' => time(), 'payment_id' => $open, 'operation_token' => bin2hex(random_bytes(32)), 'amount' => 100, 'provider_reference' => 're_pending1', 'status' => 'pending']);
+
+            try {
+                $this->settings->save(true, false, false, '', '', null, 'live_local_fixture');
+                $this->fail('The mode changed with an unfinished refund.');
+            } catch (SettingsException $exception) {
+                $this->assertSame('openPaymentsMollie', $exception->reason);
+            }
+            $this->db->update('tl_nw_payment_refund', ['status' => 'succeeded', 'succeeded' => 1], ['payment_id' => $open]);
+            $this->settings->save(true, false, false, '', '', null, 'live_local_fixture');
+            $this->assertFalse($this->settings->testMode());
+        } finally {
+            $this->db->delete('tl_nw_payment_refund', ['payment_id' => $open]);
+            $this->db->delete('tl_nw_payment', ['id' => $open]);
+        }
+    }
+
+    public function testOpenPaymentsOfAnotherProviderOrModeDoNotBlock(): void
+    {
+        $this->settings->save(true, false, true, '', '', true, 'test_local_fixture');
+        $stripe = $this->insertPayment('stripe', 1, 'open');
+        $live = $this->insertPayment('mollie', 0, 'open');
+
+        try {
+            $this->settings->save(true, false, false, '', '', null, 'live_local_fixture');
+            $this->assertFalse($this->settings->testMode());
+        } finally {
+            $this->db->delete('tl_nw_payment', ['id' => $stripe]);
+            $this->db->delete('tl_nw_payment', ['id' => $live]);
+        }
+    }
+
+    public function testStripeModeChangeIsBlockedByOpenStripePaymentsToo(): void
+    {
+        $this->settings->save(true, false, true, 'sk_test_local_fixture', '');
+        $open = $this->insertPayment('stripe', 1, 'pending');
+
+        try {
+            $this->settings->save(true, false, false, 'sk_live_local_fixture', '');
+            $this->fail('The mode changed with an open Stripe payment.');
+        } catch (SettingsException $exception) {
+            $this->assertSame('openPaymentsStripe', $exception->reason);
+        } finally {
+            $this->db->delete('tl_nw_payment', ['id' => $open]);
+        }
+    }
+
+    private function insertPayment(string $provider, int $testMode, string $status): int
+    {
+        $this->db->insert('tl_nw_payment', ['tstamp' => time(), 'payable_type' => 'fixture', 'payable_id' => 'mollie-settings-'.bin2hex(random_bytes(6)), 'amount' => 1000, 'currency' => 'EUR', 'provider' => $provider, 'provider_reference' => 'tr_settings'.bin2hex(random_bytes(3)), 'status' => $status, 'created_at' => time(), 'updated_at' => time(), 'return_token' => bin2hex(random_bytes(32)), 'test_mode' => $testMode]);
+
+        return (int) $this->db->lastInsertId();
+    }
+
     public function testStartupCheckMentionsMollie(): void
     {
         $this->settings->save(false, false, true, '', '');

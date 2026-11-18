@@ -217,6 +217,21 @@ final readonly class PaymentSettings
         } catch (\RuntimeException) {
             $oldKey = '';
         }
+
+        try {
+            $oldMollie = isset($current['mollieApiKey']) ? $this->cipher->decrypt((string) $current['mollieApiKey']) : '';
+        } catch (\RuntimeException) {
+            $oldMollie = '';
+        }
+        // The old key is dropped on a change, so nothing may still depend on it: open payments
+        // and refunds of the old mode could no longer be read from the provider.
+        $modeChanged = $current['testMode'] !== $test;
+        if (isset($current['secretKey']) && ($modeChanged || ('' !== $key && $oldKey !== $key))) {
+            $this->assertNothingOpen('stripe', $current['testMode'], 'openPaymentsStripe', 'Stripe');
+        }
+        if (isset($current['mollieApiKey']) && ($modeChanged || ('' !== $mollie && $oldMollie !== $mollie))) {
+            $this->assertNothingOpen('mollie', $current['testMode'], 'openPaymentsMollie', 'Mollie');
+        }
         $update = $changes;
         unset($update['secretKey'], $update['webhookSecret'], $update['mollieApiKey']);
 
@@ -252,6 +267,15 @@ final readonly class PaymentSettings
         }
 
         return $update;
+    }
+
+    private function assertNothingOpen(string $provider, bool $testMode, string $reason, string $name): void
+    {
+        $open = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM tl_nw_payment WHERE provider = ? AND test_mode = ? AND status IN ('open', 'pending')", [$provider, $testMode ? 1 : 0]);
+        $refunds = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider = ? AND p.test_mode = ? AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action')", [$provider, $testMode ? 1 : 0]);
+        if ($open + $refunds > 0) {
+            throw new SettingsException($reason, $name.': Es gibt noch offene Zahlungen oder Erstattungen im bisherigen Modus. Zuerst abschließen, dann Modus oder Schlüssel wechseln.');
+        }
     }
 
     public function prepareWebhook(string $url): void

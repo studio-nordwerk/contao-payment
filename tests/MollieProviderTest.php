@@ -6,6 +6,7 @@ namespace Nordwerk\PaymentBundle\Tests;
 
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use Nordwerk\PaymentBundle\Controller\WebhookController;
 use Nordwerk\PaymentBundle\Domain\Money;
 use Nordwerk\PaymentBundle\Domain\Payment;
 use Nordwerk\PaymentBundle\Domain\PaymentEvent;
@@ -24,6 +25,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Generator\UrlGenerator;
+use Symfony\Component\Routing\RequestContext;
+use Symfony\Component\Routing\Route;
+use Symfony\Component\Routing\RouteCollection;
 
 final class MollieProviderTest extends TestCase
 {
@@ -33,6 +38,7 @@ final class MollieProviderTest extends TestCase
     private PaymentService $service;
     private MollieProvider $mollie;
     private ScriptedMollie $client;
+    private RequestContext $context;
     /**
      * @var array<string, mixed>|false
      */
@@ -49,14 +55,19 @@ final class MollieProviderTest extends TestCase
         $this->settings->save(true, false, true, '', '', true, 'test_local_fixture');
         $this->repository = new PaymentRepository($this->db);
         $this->client = new ScriptedMollie();
-        $this->mollie = new MollieProvider($this->client, $this->settings);
+        $routes = new RouteCollection();
+        $routes->add('nw_payment_webhook', new Route('/_nw/payment/webhook/{provider}'));
+        $this->context = new RequestContext('', 'GET', 'shop.example', 'https');
+        $this->mollie = new MollieProvider($this->client, $this->settings, new UrlGenerator($routes, $this->context));
         $this->service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($this->createMock(StripeClientInterface::class), $this->settings), $this->settings, [], new NullLogger(), mollie: $this->mollie);
     }
 
     protected function tearDown(): void
     {
-        // Payments and their events stay: the event log is immutable by trigger. Every
-        // test uses fresh payables.
+        // The events stay (the event log is immutable by trigger); payments and refunds
+        // of the tests go.
+        $this->db->executeStatement("DELETE FROM tl_nw_payment_refund WHERE payment_id IN (SELECT id FROM tl_nw_payment WHERE payable_id LIKE 'mollie-%')");
+        $this->db->executeStatement("DELETE FROM tl_nw_payment WHERE payable_id LIKE 'mollie-%'");
         $this->db->executeStatement('DELETE FROM tl_nw_payment_settings');
         if (false !== $this->original) {
             $this->db->insert('tl_nw_payment_settings', $this->original);
@@ -79,8 +90,17 @@ final class MollieProviderTest extends TestCase
         $this->assertSame('tr_'.$this->client->lastId, $payment->reference);
     }
 
+    public function testWebhookUrlComesFromTheRouterWithItsBasePath(): void
+    {
+        $this->context->setBaseUrl('/shop');
+        $this->start(1234);
+        $this->assertSame('https://shop.example/shop/_nw/payment/webhook/mollie', $this->client->requests[0]['parameters']['webhookUrl']);
+    }
+
     public function testNoWebhookUrlForLocalOrigin(): void
     {
+        $this->context->setHost('127.0.0.1');
+        $this->context->setScheme('http');
         $this->start(1234, 'http://127.0.0.1:8084');
         $this->assertArrayNotHasKey('webhookUrl', $this->client->requests[0]['parameters']);
     }
@@ -433,6 +453,161 @@ final class MollieProviderTest extends TestCase
         $this->service->start('fixture', $payable, new Money(1234), 'mollie', 'https://shop.example', 'Test');
     }
 
+    public function testALostRefundResponseIsAdoptedInsteadOfPostedAgain(): void
+    {
+        $payment = $this->paid(1234);
+        $operation = bin2hex(random_bytes(32));
+        // Mollie created the refund earlier, the answer got lost, and the idempotency
+        // key is gone.
+        $this->client->addRefund('5.00', 'refunded', 'EUR', ['payment_id' => (string) $payment->id, 'operation_token' => $operation]);
+        $posts = $this->posts();
+        $result = $this->service->refund($payment->id, new Money(500), $operation);
+        $this->assertSame($this->client->refunds[0]['id'], $result->reference);
+        $this->assertSame($posts, $this->posts(), 'No second refund is posted.');
+        $stored = $this->repository->find($payment->id);
+        $this->assertSame([PaymentStatus::PartiallyRefunded, 500], [$stored->status, $stored->refundedCents]);
+    }
+
+    public function testNothingIsPostedWhileTheRefundListCannotBeRead(): void
+    {
+        $payment = $this->paid(1234);
+        $operation = bin2hex(random_bytes(32));
+        $this->client->failList = true;
+        $posts = $this->posts();
+
+        try {
+            $this->service->refund($payment->id, new Money(500), $operation);
+            $this->fail('The refund was sent although it is unclear whether it already exists.');
+        } catch (\RuntimeException) {
+        }
+        $this->service->reconcile();
+        $this->assertSame($posts, $this->posts());
+        $row = $this->db->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ?', [$operation]);
+        $this->assertIsArray($row);
+        $this->assertSame(['', 'pending'], [$row['provider_reference'], $row['status']], 'The operation stays for review.');
+
+        // Once the list is readable and holds nothing for this operation, it is created, once.
+        $this->client->failList = false;
+        $this->service->reconcile();
+        $this->assertSame($posts + 1, $this->posts());
+        $this->assertSame(500, $this->repository->find($payment->id)->refundedCents);
+    }
+
+    public function testADefinitivelyRejectedRefundIsRecordedAndDoesNotBlockTheNextOne(): void
+    {
+        $payment = $this->paid(1234);
+        $operation = bin2hex(random_bytes(32));
+        $this->client->rejectRefunds = true;
+
+        try {
+            $this->service->refund($payment->id, new Money(500), $operation);
+            $this->fail('Rejection was not reported.');
+        } catch (\InvalidArgumentException) {
+        }
+        $row = $this->db->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ?', [$operation]);
+        $this->assertIsArray($row);
+        $this->assertSame('failed', $row['status']);
+        $this->assertNotSame('', $row['reason']);
+        $posts = $this->posts();
+
+        try {
+            $this->service->refund($payment->id, new Money(500), $operation);
+            $this->fail('The rejected operation was repeated.');
+        } catch (\InvalidArgumentException) {
+        }
+        $this->service->reconcile();
+        $this->assertSame($posts, $this->posts());
+
+        $this->client->rejectRefunds = false;
+        $this->assertTrue($this->service->refund($payment->id, new Money(500), bin2hex(random_bytes(32)))->succeeded);
+    }
+
+    public function testStuckRefundsDoNotCrowdOutTheOthersInTheCron(): void
+    {
+        $payment = $this->start(1234);
+        $stuck = $this->start(1234);
+        $this->client->status = 'paid';
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($stuck));
+        $this->client->refundStatus = 'pending';
+        $this->service->refund($payment->id, new Money(500), $operation = bin2hex(random_bytes(32)));
+
+        for ($i = 0; $i < 100; ++$i) {
+            $this->db->insert('tl_nw_payment_refund', ['tstamp' => 1, 'created_at' => 1, 'payment_id' => $stuck->id, 'operation_token' => bin2hex(random_bytes(32)), 'amount' => 1, 'provider_reference' => 're_gone'.$i, 'status' => 'pending', 'checked_at' => time()]);
+        }
+        $this->client->settleRefunds('refunded');
+        $this->service->reconcile();
+        $this->assertSame('succeeded', $this->db->fetchOne('SELECT status FROM tl_nw_payment_refund WHERE operation_token = ?', [$operation]), 'The refund that was never looked at comes first.');
+    }
+
+    public function testPaymentOfTheOtherModeIsNeitherReusedNorReplaced(): void
+    {
+        $payable = 'mollie-'.bin2hex(random_bytes(6));
+        $this->service->start('fixture', $payable, new Money(1234), 'mollie', 'https://shop.example', 'Test');
+        $payment = $this->repository->forPayable('fixture', $payable);
+        $this->assertNotNull($payment);
+        $this->client->status = 'paid';
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        $this->settings->save(true, false, false, '', '', null, 'live_local_fixture');
+
+        try {
+            $this->service->start('fixture', $payable, new Money(1234), 'mollie', 'https://shop.example', 'Test');
+            $this->fail('A paid test payment was reused in live mode.');
+        } catch (\InvalidArgumentException) {
+            $this->assertSame(1, (int) $this->db->fetchOne('SELECT COUNT(*) FROM tl_nw_payment WHERE payable_id = ?', [$payable]));
+        }
+    }
+
+    public function testStripePaymentOfTheOtherModeIsNotReusedEither(): void
+    {
+        $payable = 'mollie-stripe-'.bin2hex(random_bytes(6));
+        $this->settings->save(true, true, true, 'sk_test_local_fixture', 'whsec_local_fixture');
+        $this->db->insert('tl_nw_payment', ['tstamp' => time(), 'payable_type' => 'fixture', 'payable_id' => $payable, 'amount' => 1234, 'currency' => 'EUR', 'provider' => 'stripe', 'provider_reference' => 'cs_live_fixture', 'status' => 'paid', 'created_at' => time(), 'updated_at' => time(), 'return_token' => bin2hex(random_bytes(32)), 'test_mode' => 0]);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->service->start('fixture', $payable, new Money(1234), 'stripe', 'https://shop.example', 'Test');
+    }
+
+    public function testRefundsMadeInTheMollieDashboardAreFoundWithoutAWebhook(): void
+    {
+        $payment = $this->paid(1234);
+        $this->db->update('tl_nw_payment', ['checked_at' => time() - 3600], ['id' => $payment->id]);
+        $this->client->addRefund('5.00', 'refunded');
+        $this->service->reconcile();
+        $stored = $this->repository->find($payment->id);
+        $this->assertSame([PaymentStatus::PartiallyRefunded, 500], [$stored->status, $stored->refundedCents]);
+
+        // Recently looked at payments are left alone.
+        $calls = \count($this->client->requests);
+        $this->service->reconcile();
+        $this->assertSame($calls, \count($this->client->requests));
+    }
+
+    public function testWebhookOfAnUnknownPaymentIsAcknowledgedWithoutCallingMollie(): void
+    {
+        $controller = new WebhookController($this->service);
+        $calls = \count($this->client->requests);
+        $response = $controller(Request::create('/', 'POST', ['id' => 'tr_stranger123']), 'mollie');
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame($calls, \count($this->client->requests));
+        $this->assertSame(400, $controller(Request::create('/', 'POST', ['id' => 'nonsense']), 'mollie')->getStatusCode());
+    }
+
+    public function testWebhookOfOurPaymentAnswers200AlsoWhenRepeated(): void
+    {
+        $payment = $this->start(1234);
+        $this->client->status = 'paid';
+        $controller = new WebhookController($this->service);
+        $request = static fn (): Request => Request::create('/', 'POST', ['id' => $payment->reference]);
+        $this->assertSame(200, $controller($request(), 'mollie')->getStatusCode());
+        $this->assertSame(PaymentStatus::Paid, $this->repository->find($payment->id)->status);
+        $this->assertSame(200, $controller($request(), 'mollie')->getStatusCode());
+    }
+
+    private function posts(): int
+    {
+        return \count(array_filter($this->client->requests, static fn (array $r): bool => 'post' === $r['method']));
+    }
+
     public function testMethodsListMollieOnlyWhenSetUp(): void
     {
         $this->assertSame('Online bezahlen (Mollie)', $this->service->methods()['mollie'] ?? null);
@@ -484,6 +659,8 @@ final class ScriptedMollie implements MollieClientInterface
     public string $mode = 'test';
     public string $status = 'open';
     public int|null $pageSize = null;
+    public bool $failList = false;
+    public bool $rejectRefunds = false;
     /**
      * @var list<array<string, mixed>>
      */
@@ -520,9 +697,15 @@ final class ScriptedMollie implements MollieClientInterface
             $this->payments['tr_'.$this->lastId] = ['amount' => $parameters['amount'], 'metadata' => $parameters['metadata']];
             $response = $this->payment('tr_'.$this->lastId);
         } elseif ('post' === $method && 1 === preg_match('#^/payments/(tr_\w+)/refunds$#', $path)) {
+            if ($this->rejectRefunds) {
+                throw new \InvalidArgumentException('Mollie rejected the request (422).');
+            }
             $response = ['id' => 're_'.bin2hex(random_bytes(5)), 'status' => $this->refundStatus, 'amount' => $parameters['amount'], 'metadata' => $parameters['metadata']];
             $this->refunds[] = $response;
         } elseif ('get' === $method && 1 === preg_match('#^/payments/(tr_\w+)/refunds$#', $path)) {
+            if ($this->failList) {
+                throw new \RuntimeException('Mollie unreachable.');
+            }
             $from = $parameters['from'] ?? null;
             $rest = $this->refunds;
             if (null !== $from) {
@@ -549,9 +732,12 @@ final class ScriptedMollie implements MollieClientInterface
         return $response;
     }
 
-    public function addRefund(string $value, string $status, string $currency = 'EUR'): void
+    /**
+     * @param array<string, string> $metadata
+     */
+    public function addRefund(string $value, string $status, string $currency = 'EUR', array $metadata = []): void
     {
-        $this->refunds[] = ['id' => 're_'.bin2hex(random_bytes(5)), 'status' => $status, 'amount' => ['currency' => $currency, 'value' => $value], 'metadata' => []];
+        $this->refunds[] = ['id' => 're_'.bin2hex(random_bytes(5)), 'status' => $status, 'amount' => ['currency' => $currency, 'value' => $value], 'metadata' => $metadata];
     }
 
     /**
