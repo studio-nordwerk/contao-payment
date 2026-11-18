@@ -196,12 +196,13 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
             'failed' => PaymentStatus::Failed,
             default => throw new \InvalidArgumentException('Unknown Mollie payment status.'),
         };
-        if (PaymentStatus::Paid === $status && isset($mollie['amountRefunded'])) {
-            $amount = MollieAmount::parse($mollie['amountRefunded']);
-            if ($amount->currency !== $money->currency || $amount->cents > $money->cents) {
-                throw new \InvalidArgumentException('Mollie refund amount mismatch.');
+        if (PaymentStatus::Paid === $status) {
+            // amountRefunded is not used: Mollie does not say whether it counts refunds that are
+            // still queued or pending. Only refunds in status "refunded" count as money back.
+            $listed = isset($mollie['amountRefunded']) ? MollieAmount::parse($mollie['amountRefunded'])->cents : 0;
+            if ($listed > 0 || isset($mollie['_links']['refunds'])) {
+                $refunded = $this->refundedCents($id, $money);
             }
-            $refunded = $amount->cents;
             if ($refunded > 0) {
                 $status = $refunded === $money->cents ? PaymentStatus::Refunded : PaymentStatus::PartiallyRefunded;
             }
@@ -209,6 +210,46 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
         $paymentId = $mollie['metadata']['payment_id'] ?? 0;
 
         return new PaymentEvent('mollie:'.$id.':'.$status->value.':'.$refunded, \is_int($paymentId) || (\is_string($paymentId) && ctype_digit($paymentId)) ? (int) $paymentId : 0, $id, $status, $money, $refunded, 'test' === $mollie['mode']);
+    }
+
+    /**
+     * Sum of the refunds with status "refunded" of one payment (all pages).
+     */
+    private function refundedCents(string $id, Money $total): int
+    {
+        $sum = 0;
+        $from = null;
+
+        for ($page = 0; $page < 20; ++$page) {
+            $list = $this->client->request('get', '/payments/'.$id.'/refunds', ['limit' => 250] + (null === $from ? [] : ['from' => $from]));
+            $refunds = $list['_embedded']['refunds'] ?? [];
+            if (!\is_array($refunds)) {
+                throw new \InvalidArgumentException('Invalid Mollie refund list.');
+            }
+
+            foreach ($refunds as $refund) {
+                if (!\is_array($refund) || !\is_string($refund['id'] ?? null)) {
+                    throw new \InvalidArgumentException('Invalid Mollie refund.');
+                }
+                $amount = MollieAmount::parse($refund['amount'] ?? null);
+                if ($amount->currency !== $total->currency) {
+                    throw new \InvalidArgumentException('Mollie refund currency mismatch.');
+                }
+                if ('refunded' === ($refund['status'] ?? null)) {
+                    $sum += $amount->cents;
+                }
+                $from = $refund['id'];
+            }
+            if (!isset($list['_links']['next']['href']) || [] === $refunds) {
+                if ($sum > $total->cents) {
+                    throw new \InvalidArgumentException('Mollie refunds exceed the payment amount.');
+                }
+
+                return $sum;
+            }
+        }
+
+        throw new \InvalidArgumentException('Too many Mollie refund pages.');
     }
 
     /**

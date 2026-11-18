@@ -103,41 +103,103 @@ final class MollieProviderTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, string|null, PaymentStatus}>
+     * @return iterable<string, array{string, list<array{string, string}>, PaymentStatus, int}>
      */
     public static function statuses(): iterable
     {
-        yield 'open' => ['open', null, PaymentStatus::Open];
-        yield 'pending' => ['pending', null, PaymentStatus::Pending];
-        yield 'authorized' => ['authorized', null, PaymentStatus::Pending];
-        yield 'paid' => ['paid', null, PaymentStatus::Paid];
-        yield 'paid, nothing refunded' => ['paid', '0.00', PaymentStatus::Paid];
-        yield 'paid, partly refunded' => ['paid', '5.00', PaymentStatus::PartiallyRefunded];
-        yield 'paid, fully refunded' => ['paid', '12.34', PaymentStatus::Refunded];
-        yield 'canceled by the customer' => ['canceled', null, PaymentStatus::Expired];
-        yield 'expired' => ['expired', null, PaymentStatus::Expired];
-        yield 'failed' => ['failed', null, PaymentStatus::Failed];
+        yield 'open' => ['open', [], PaymentStatus::Open, 0];
+        yield 'pending' => ['pending', [], PaymentStatus::Pending, 0];
+        yield 'authorized' => ['authorized', [], PaymentStatus::Pending, 0];
+        yield 'paid' => ['paid', [], PaymentStatus::Paid, 0];
+        yield 'paid, partly refunded' => ['paid', [['5.00', 'refunded']], PaymentStatus::PartiallyRefunded, 500];
+        yield 'paid, refunded in two steps' => ['paid', [['3.00', 'refunded'], ['2.00', 'refunded']], PaymentStatus::PartiallyRefunded, 500];
+        yield 'paid, fully refunded' => ['paid', [['12.34', 'refunded']], PaymentStatus::Refunded, 1234];
+        // Money is only back with status "refunded".
+        yield 'refund queued' => ['paid', [['5.00', 'queued']], PaymentStatus::Paid, 0];
+        yield 'refund pending' => ['paid', [['5.00', 'pending']], PaymentStatus::Paid, 0];
+        yield 'refund processing' => ['paid', [['12.34', 'processing']], PaymentStatus::Paid, 0];
+        yield 'refund failed' => ['paid', [['5.00', 'failed']], PaymentStatus::Paid, 0];
+        yield 'refund canceled' => ['paid', [['5.00', 'canceled']], PaymentStatus::Paid, 0];
+        yield 'one refunded, one pending' => ['paid', [['3.00', 'refunded'], ['2.00', 'pending']], PaymentStatus::PartiallyRefunded, 300];
+        yield 'one refunded, one failed' => ['paid', [['12.34', 'refunded'], ['1.00', 'failed']], PaymentStatus::Refunded, 1234];
+        yield 'canceled by the customer' => ['canceled', [], PaymentStatus::Expired, 0];
+        yield 'expired' => ['expired', [], PaymentStatus::Expired, 0];
+        yield 'failed' => ['failed', [], PaymentStatus::Failed, 0];
     }
 
+    /**
+     * @param list<array{string, string}> $refunds
+     */
     #[DataProvider('statuses')]
-    public function testStatusMapping(string $mollieStatus, string|null $refunded, PaymentStatus $expected): void
+    public function testStatusMapping(string $mollieStatus, array $refunds, PaymentStatus $expected, int $cents): void
     {
         $payment = $this->start(1234);
         $this->client->status = $mollieStatus;
-        $this->client->refunded = $refunded;
+
+        foreach ($refunds as [$value, $status]) {
+            $this->client->addRefund($value, $status);
+        }
         $event = $this->mollie->fetchSnapshot($payment);
         $this->assertSame($expected, $event->status);
-        $this->assertSame(null === $refunded ? 0 : (int) str_replace('.', '', $refunded), $event->refundedCents);
+        $this->assertSame($cents, $event->refundedCents);
         $this->assertSame($expected, $this->mollie->fetchStatus($payment));
     }
 
-    public function testRefundedAmountAboveTotalIsRefused(): void
+    public function testRefundsAboveTotalOrInAnotherCurrencyAreRefused(): void
+    {
+        $payment = $this->start(1234);
+        $other = $this->start(1234);
+        $this->client->status = 'paid';
+        $this->client->addRefund('12.00', 'refunded');
+        $this->client->addRefund('0.35', 'refunded');
+
+        try {
+            $this->mollie->fetchSnapshot($payment);
+            $this->fail('Refunds above the payment amount were accepted.');
+        } catch (\InvalidArgumentException) {
+        }
+        $this->client->refunds = [];
+        $this->client->addRefund('1.00', 'refunded', 'USD');
+        $this->expectException(\InvalidArgumentException::class);
+        $this->mollie->fetchSnapshot($other);
+    }
+
+    public function testRefundListIsReadPageByPage(): void
     {
         $payment = $this->start(1234);
         $this->client->status = 'paid';
-        $this->client->refunded = '12.35';
-        $this->expectException(\InvalidArgumentException::class);
-        $this->mollie->fetchSnapshot($payment);
+        $this->client->pageSize = 2;
+
+        foreach (['1.00', '1.00', '1.00', '1.00', '1.00'] as $value) {
+            $this->client->addRefund($value, 'refunded');
+        }
+        $this->assertSame(500, $this->mollie->fetchSnapshot($payment)->refundedCents);
+    }
+
+    public function testPendingRefundKeepsThePaymentPaidUntilMollieHasRefundedIt(): void
+    {
+        $payment = $this->paid(1234);
+        $this->client->refundStatus = 'pending';
+        $this->service->refund($payment->id, new Money(500), bin2hex(random_bytes(32)));
+        // The payment already shows the amount as refunded, the status must not follow yet.
+        $this->assertSame('5.00', $this->client->payment($payment->reference)['amountRefunded']['value']);
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        $this->assertSame([PaymentStatus::Paid, 0], [$this->repository->find($payment->id)->status, $this->repository->find($payment->id)->refundedCents]);
+
+        $this->client->settleRefunds('refunded');
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        $stored = $this->repository->find($payment->id);
+        $this->assertSame([PaymentStatus::PartiallyRefunded, 500], [$stored->status, $stored->refundedCents]);
+    }
+
+    public function testRefundThatFailsLaterNeverShowsAsRefunded(): void
+    {
+        $payment = $this->paid(1234);
+        $this->client->refundStatus = 'pending';
+        $this->service->refund($payment->id, new Money(1234), bin2hex(random_bytes(32)));
+        $this->client->settleRefunds('failed');
+        $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
+        $this->assertSame(PaymentStatus::Paid, $this->repository->find($payment->id)->status);
     }
 
     public function testSnapshotOfAnotherPaymentOrAmountIsRefused(): void
@@ -300,8 +362,7 @@ final class MollieProviderTest extends TestCase
         }
 
         // Mollie settles the refund; the next cron run applies it without a webhook.
-        $this->client->refundStatus = 'refunded';
-        $this->client->refunded = '5.00';
+        $this->client->settleRefunds('refunded');
         $this->service->reconcile();
         $row = $this->db->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ?', [$operation]);
         $this->assertIsArray($row);
@@ -315,10 +376,9 @@ final class MollieProviderTest extends TestCase
         $payment = $this->paid(1234);
         $this->client->refundStatus = 'pending';
         $this->service->refund($payment->id, new Money(500), bin2hex(random_bytes(32)));
-        $this->client->refundStatus = 'failed';
+        $this->client->settleRefunds('failed');
         $this->service->reconcile();
         $this->client->refundStatus = 'refunded';
-        $this->client->refunded = '12.34';
         $this->assertTrue($this->service->refund($payment->id, new Money(1234), bin2hex(random_bytes(32)))->succeeded);
         $this->assertSame(PaymentStatus::Refunded, $this->repository->find($payment->id)->status);
     }
@@ -405,7 +465,6 @@ final class MollieProviderTest extends TestCase
         $payment = $this->start($cents);
         $this->client->status = 'paid';
         $this->service->apply('mollie', $this->mollie->fetchSnapshot($payment));
-        $this->client->refunded = null;
 
         return $this->repository->find($payment->id);
     }
@@ -424,7 +483,11 @@ final class ScriptedMollie implements MollieClientInterface
     public string $lastId = '';
     public string $mode = 'test';
     public string $status = 'open';
-    public string|null $refunded = null;
+    public int|null $pageSize = null;
+    /**
+     * @var list<array<string, mixed>>
+     */
+    public array $refunds = [];
     public string|null $amount = null;
     public string|null $currency = null;
     public int|null $metadataPaymentId = null;
@@ -458,13 +521,22 @@ final class ScriptedMollie implements MollieClientInterface
             $response = $this->payment('tr_'.$this->lastId);
         } elseif ('post' === $method && 1 === preg_match('#^/payments/(tr_\w+)/refunds$#', $path)) {
             $response = ['id' => 're_'.bin2hex(random_bytes(5)), 'status' => $this->refundStatus, 'amount' => $parameters['amount'], 'metadata' => $parameters['metadata']];
-            $this->byKey[(string) $idempotencyKey] = $response;
-            if ('refunded' === $this->refundStatus) {
-                $this->refunded = $parameters['amount']['value'];
+            $this->refunds[] = $response;
+        } elseif ('get' === $method && 1 === preg_match('#^/payments/(tr_\w+)/refunds$#', $path)) {
+            $from = $parameters['from'] ?? null;
+            $rest = $this->refunds;
+            if (null !== $from) {
+                $index = array_search($from, array_column($rest, 'id'), true);
+                $rest = \array_slice($rest, false === $index ? 0 : $index + 1);
             }
-            $this->lastRefund = $response;
+            $page = null === $this->pageSize ? $rest : \array_slice($rest, 0, $this->pageSize);
+            $response = ['count' => \count($page), '_embedded' => ['refunds' => $page], '_links' => []];
+            if (\count($page) < \count($rest)) {
+                $response['_links']['next'] = ['href' => 'https://api.mollie.com/v2/payments/x/refunds?from='.$page[\count($page) - 1]['id']];
+            }
         } elseif ('get' === $method && 1 === preg_match('#^/payments/(tr_\w+)/refunds/(re_\w+)$#', $path, $match)) {
-            $response = [...$this->lastRefund, 'id' => $match[2], 'status' => $this->refundStatus];
+            $found = array_values(array_filter($this->refunds, static fn (array $r): bool => $r['id'] === $match[2]));
+            $response = $found[0] ?? throw new \InvalidArgumentException('Unknown refund');
         } elseif ('get' === $method && 1 === preg_match('#^/payments/(tr_\w+)$#', $path, $match)) {
             $response = $this->payment($match[1]);
         } else {
@@ -477,25 +549,46 @@ final class ScriptedMollie implements MollieClientInterface
         return $response;
     }
 
+    public function addRefund(string $value, string $status, string $currency = 'EUR'): void
+    {
+        $this->refunds[] = ['id' => 're_'.bin2hex(random_bytes(5)), 'status' => $status, 'amount' => ['currency' => $currency, 'value' => $value], 'metadata' => []];
+    }
+
     /**
-     * @var array<string, mixed>
+     * Moves every refund that is still on its way to $status.
      */
-    private array $lastRefund = [];
+    public function settleRefunds(string $status): void
+    {
+        foreach ($this->refunds as $index => $refund) {
+            if (\in_array($refund['status'], ['queued', 'pending', 'processing'], true)) {
+                $this->refunds[$index]['status'] = $status;
+            }
+        }
+    }
 
     /**
      * @return array<string, mixed>
      */
-    private function payment(string $id): array
+    public function payment(string $id): array
     {
         $stored = $this->payments[$id] ?? throw new \InvalidArgumentException('Unknown payment');
         $amount = ['currency' => $this->currency ?? $stored['amount']['currency'], 'value' => $this->amount ?? $stored['amount']['value']];
         $metadata = null === $this->metadataPaymentId ? $stored['metadata'] : ['payment_id' => (string) $this->metadataPaymentId];
         $payment = ['resource' => 'payment', 'id' => $id, 'mode' => $this->mode, 'status' => $this->status, 'amount' => $amount, 'metadata' => $metadata];
-        if (null !== $this->refunded) {
-            $payment['amountRefunded'] = ['currency' => $amount['currency'], 'value' => $this->refunded];
+        if ([] !== $this->refunds) {
+            // Like the real API (presumably): queued and pending refunds already count.
+            $cents = 0;
+
+            foreach ($this->refunds as $refund) {
+                if (!\in_array($refund['status'], ['failed', 'canceled'], true)) {
+                    $cents += (int) str_replace('.', '', $refund['amount']['value']);
+                }
+            }
+            $payment['amountRefunded'] = ['currency' => $amount['currency'], 'value' => \sprintf('%d.%02d', intdiv($cents, 100), $cents % 100)];
+            $payment['_links']['refunds'] = ['href' => 'https://api.mollie.com/v2/payments/'.$id.'/refunds'];
         }
         if ('open' === $this->status) {
-            $payment['_links'] = ['checkout' => ['href' => 'https://checkout.example/'.substr($id, 3), 'type' => 'text/html']];
+            $payment['_links']['checkout'] = ['href' => 'https://checkout.example/'.substr($id, 3), 'type' => 'text/html'];
         }
 
         return $payment;

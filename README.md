@@ -42,7 +42,7 @@ Mollie nimmt die Zahlung auf der gehosteten Mollie-Seite entgegen. Der Kunde wä
 
 **Ohne Webhook (lokal, hinter Firewall):** Die Rückkehrseite ruft für Mollie-Zahlungen im Status offen oder ausstehend den Stand bei Mollie ab (höchstens alle fünf Sekunden je Zahlung) und wendet ihn an. Das ist sicher, weil der Stand von Mollie stammt, nicht aus dem Browser; die Seite bestätigt weiterhin nie selbst. Zusätzlich gleicht der Contao-Cron nach zehn Minuten ab.
 
-**Status:** offen → offen; ausstehend und autorisiert → ausstehend; bezahlt → bezahlt (mit erstattetem Betrag teil- bzw. vollständig erstattet); vom Kunden abgebrochen und abgelaufen → abgelaufen; fehlgeschlagen → fehlgeschlagen.
+**Status:** offen → offen; ausstehend und autorisiert → ausstehend; bezahlt → bezahlt. Teil- bzw. vollständig erstattet gilt erst, wenn Erstattungen mit Mollie-Status `refunded` zusammen den Betrag ergeben (das Bundle liest dafür `GET /payments/{id}/refunds`; das Feld `amountRefunded` wird nicht verwendet, weil die Mollie-Doku nicht sagt, ob es noch ausstehende Erstattungen mitzählt); vom Kunden abgebrochen und abgelaufen → abgelaufen; fehlgeschlagen → fehlgeschlagen.
 
 **Erstattung:** **Erstatten** legt über die API eine Mollie-Erstattung an (Idempotency-Key aus der Operations-ID, Wiederholung erzeugt keine zweite). Mollie führt Erstattungen teils verzögert aus (`queued`, `pending`, `processing`); sie bleiben dann ausstehend und blockieren weitere Erstattungen, bis Webhook oder Cron das Ergebnis abgleichen. Fehlgeschlagene oder abgebrochene Erstattungen geben den Betrag wieder frei.
 

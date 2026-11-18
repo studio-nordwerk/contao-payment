@@ -29,11 +29,14 @@ def public_host(url):
 def view(payment):
     out = {k: v for k, v in payment.items() if not k.startswith('_')}
     out['resource'] = 'payment'
-    done = sum(cents(r['amount']) for r in refunds.values() if r['paymentId'] == payment['id'] and r['status'] == 'refunded')
+    # Like (presumably) the real API: amountRefunded also counts refunds that are still queued or pending.
+    done = sum(cents(r['amount']) for r in refunds.values() if r['paymentId'] == payment['id'] and r['status'] not in ('failed', 'canceled'))
     if any(r['paymentId'] == payment['id'] for r in refunds.values()):
         out['amountRefunded'] = money(done, payment['amount']['currency'])
         out['amountRemaining'] = money(cents(payment['amount']) - done, payment['amount']['currency'])
     links = {'self': {'href': public + '/v2/payments/' + payment['id'], 'type': 'application/hal+json'}}
+    if any(r['paymentId'] == payment['id'] for r in refunds.values()):
+        links['refunds'] = {'href': public + '/v2/payments/' + payment['id'] + '/refunds', 'type': 'application/hal+json'}
     if payment['status'] == 'open':
         links['checkout'] = {'href': public + '/checkout/' + payment['id'], 'type': 'text/html'}
     out['_links'] = links
