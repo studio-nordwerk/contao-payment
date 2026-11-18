@@ -75,7 +75,9 @@ class Handler(BaseHTTPRequestHandler):
         return re.match(r'^Bearer test_[A-Za-z0-9_]+$', self.headers.get('Authorization', '')) is not None
 
     def do_GET(self):
-        path = urllib.parse.urlsplit(self.path).path
+        split = urllib.parse.urlsplit(self.path)
+        path = split.path
+        query = urllib.parse.parse_qs(split.query)
         with lock:
             if path.startswith('/v2/'):
                 if not self.authorized():
@@ -88,7 +90,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(view(payment))
                 elif len(parts) == 3 and parts[2] == 'refunds':
                     items = [r for r in refunds.values() if r['paymentId'] == payment['id']]
-                    self.reply({'count': len(items), '_embedded': {'refunds': items}})
+                    # Like Mollie: "from" is inclusive, "limit" defaults to 50 (max 250), _links.next points to the rest.
+                    start = next((i for i, r in enumerate(items) if r['id'] == query.get('from', [''])[0]), 0)
+                    limit = max(1, min(250, int(query.get('limit', ['50'])[0])))
+                    rest = items[start:]
+                    links = {'self': {'href': public + self.path}}
+                    if len(rest) > limit:
+                        links['next'] = {'href': public + '/v2/payments/' + payment['id'] + '/refunds?from=' + rest[limit]['id'] + '&limit=' + str(limit)}
+                    self.reply({'count': len(rest[:limit]), '_embedded': {'refunds': rest[:limit]}, '_links': links})
                 elif len(parts) == 4 and parts[2] == 'refunds' and parts[3] in refunds and refunds[parts[3]]['paymentId'] == payment['id']:
                     self.reply(refunds[parts[3]])
                 else:

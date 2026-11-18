@@ -14,6 +14,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
 use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
+use Nordwerk\PaymentBundle\Domain\RefundRejectedException;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
@@ -183,10 +184,19 @@ final readonly class PaymentService
             throw new \LogicException('Stripe and Mollie refunds require an independently committed operation.');
         }
 
+        // Read before the transaction: a plain read inside it would fix the snapshot,
+        // and the locking reads below would then fail on rows that other requests
+        // changed meanwhile.
+        $testMode = $this->settings->testMode();
         // Reserve under the payment lock and commit BEFORE any money can move.
         $this->connection->transactional(
-            function () use ($id, $money, $operation): void {
+            function () use ($id, $money, $operation, $testMode): void {
                 $payment = $this->repository->find($id, true);
+                // The key of the other mode no longer exists, so such a payment cannot be
+                // refunded here.
+                if (\in_array($payment->provider, ['stripe', 'mollie'], true) && $payment->testMode !== $testMode) {
+                    throw new \InvalidArgumentException('Die Zahlung wurde im '.($payment->testMode ? 'Test' : 'Live').'modus angelegt; im aktuellen Modus lässt sie sich nicht erstatten. Erstattung im Dashboard des Anbieters oder nach Rückkehr in den früheren Modus.');
+                }
                 $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ? FOR UPDATE', [$operation]);
                 if (false !== $existing) {
                     if ((int) $existing['payment_id'] !== $id || (int) $existing['amount'] !== $money->cents || $money->currency !== $payment->money->currency) {
@@ -222,7 +232,7 @@ final readonly class PaymentService
 
                 try {
                     $result = $this->provider($payment->provider)->refund($payment, $money, $operation);
-                } catch (\InvalidArgumentException $exception) {
+                } catch (RefundRejectedException $exception) {
                     // The provider definitively refused the request: keep that, free the reservation.
                     $this->connection->update('tl_nw_payment_refund', ['status' => RefundStatus::Failed->value, 'reason' => mb_substr($exception->getMessage(), 0, 255), 'tstamp' => time()], ['operation_token' => $operation]);
                     $rejected = new \InvalidArgumentException('Erstattung wurde vom Anbieter abgelehnt.', 0, $exception);
@@ -231,8 +241,7 @@ final readonly class PaymentService
                 }
                 $this->connection->update('tl_nw_payment_refund', ['provider_reference' => $result->reference, 'succeeded' => $result->succeeded ? 1 : 0, 'status' => $result->status->value], ['operation_token' => $operation]);
                 if ($result->succeeded) {
-                    $total = (int) $existing['base_refunded_amount'] + $money->cents;
-                    $this->apply($payment->provider, new PaymentEvent('refund:'.$result->reference, $id, $payment->reference, $total === $payment->money->cents ? PaymentStatus::Refunded : PaymentStatus::PartiallyRefunded, $payment->money, $total, $payment->testMode));
+                    $this->apply($payment->provider, $this->succeededRefundEvent($payment, $result, (int) $existing['base_refunded_amount'] + $money->cents));
                 }
 
                 return $result;
@@ -261,7 +270,7 @@ final readonly class PaymentService
                     $payment = $this->repository->find((int) $refund['payment_id']);
                     $eventId = 'refund-fetch:'.$refund['id'].':'.bin2hex(random_bytes(16));
                     $event = 'mollie' === $payment->provider
-                        ? ($this->mollie ?? throw new \LogicException('Mollie is not available.'))->refundEvent($eventId, $payment, (string) $refund['provider_reference'])
+                        ? ($this->mollie ?? throw new \LogicException('Mollie is not available.'))->refundEvent($eventId, $payment, (string) $refund['provider_reference'], (int) $refund['amount'], (string) $refund['operation_token'])
                         : $this->stripe->refundEvent($eventId, (string) $refund['provider_reference']);
                     $this->apply($payment->provider, $event);
                 }
@@ -316,6 +325,24 @@ final readonly class PaymentService
         }
 
         return $this->repository->find($payment->id);
+    }
+
+    /**
+     * Mollie confirms the cumulative refunded amount itself: an adopted refund may be
+     * one of several, and refunds from the dashboard are not in our own sum. Stripe,
+     * and Mollie if it cannot be asked right now, use the sum from the reservation.
+     */
+    private function succeededRefundEvent(Payment $payment, RefundResult $result, int $total): PaymentEvent
+    {
+        if ('mollie' === $payment->provider && null !== $this->mollie) {
+            try {
+                return $this->mollie->fetchSnapshot($payment);
+            } catch (\Throwable $exception) {
+                $this->logger->error('Mollie refund total could not be confirmed.', ['payment_id' => $payment->id, 'failure_type' => $exception::class]);
+            }
+        }
+
+        return new PaymentEvent('refund:'.$result->reference, $payment->id, $payment->reference, $total === $payment->money->cents ? PaymentStatus::Refunded : PaymentStatus::PartiallyRefunded, $payment->money, $total, $payment->testMode);
     }
 
     /**

@@ -18,6 +18,15 @@
 - [ ] Chargebacks, Abonnements und Zahlungen in Währungen ohne Nachkommastellen sind nicht abgebildet.
 - [ ] Echter Mollie-Testmodus in öffentlich erreichbarer HTTPS-Testinstallation (Webhook, verzögerte Zahlarten, Erstattung).
 
+## Bekannte Grenzen (Mollie, Moduswechsel)
+
+- Zwischen dem Speichern der Einstellungen und einer gleichzeitig laufenden Kasse oder Erstattungsreservierung gibt es ein kurzes Zeitfenster: Die Sperre bei Modus- und Schlüsselwechsel prüft offene Zahlungen ohne Zeilensperre, eine Zahlung, die genau dann angelegt wird, kann übersehen werden.
+- Ein Schlüsselwechsel wird gesperrt, solange offene Zahlungen oder Erstattungen des Anbieters bestehen. Ist der alte Schlüssel dabei gesperrt oder widerrufen, bleibt nur abzuwarten, bis die Zahlungen ablaufen, oder den neuen Schlüssel vorübergehend über den Env-Override (`NW_PAYMENT_MOLLIE_API_KEY`, `NW_PAYMENT_STRIPE_SECRET_KEY`) zu setzen.
+- Das Contao-Formular (`DC_Table`) validiert die Einstellungen ohne Zeilensperre; zwei gleichzeitig gespeicherte Formulare können sich gegenseitig überschreiben.
+- Der Cron arbeitet Erstattungen und Zahlungen reihum nach letzter Prüfung ab, überlappende Läufe sind nicht ausgeschlossen. Abgleiche sind idempotent (deterministische Event-IDs), können aber denselben Anbieteraufruf doppelt auslösen.
+- Der rotierende Abgleich bezahlter Mollie-Zahlungen betrachtet nur Zahlungen der letzten 180 Tage: Eine im Dashboard ausgelöste Erstattung kurz vor dieser Grenze kann unbemerkt bleiben, wenn kein Webhook ankommt.
+- Webhook- und Rückkehr-URL nutzen denselben öffentlichen Ursprung (den, den der Shop übergibt) und den Router-Pfad; liegt die Installation in einem Unterverzeichnis, muss der übergebene Ursprung selbst das Unterverzeichnis enthalten, damit die Rückkehr-URL stimmt.
+
 ## Offene Produktentscheidungen
 
 - Wie sollen Teilbeträge bei Bestellungen mit verschiedenen Steuersätzen auf Positionen verteilt werden? Bis zur Entscheidung: finanzielle Erstattung zulässig, Storno-Beleg zur Steuerzuordnung markiert. Volle Erstattung kann den vollständigen Originalbeleg stornieren.

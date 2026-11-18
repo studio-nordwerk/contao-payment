@@ -13,6 +13,7 @@ use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\DependencyInjection\Attribute\Autoconfigure;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
 use Symfony\Component\Routing\RouterInterface;
 
 /**
@@ -43,7 +44,7 @@ final readonly class StripeWebhookView
         $lang = $GLOBALS['TL_LANG']['tl_nw_payment_settings'];
         $request = $this->requestStack->getCurrentRequest() ?? throw new \RuntimeException('No request.');
         $back = $this->router->generate('contao_backend', ['do' => 'nw_payment_settings', 'act' => 'edit', 'id' => 1]);
-        $url = $request->getSchemeAndHttpHost().'/_nw/payment/webhook/stripe';
+        $url = $this->router->generate('nw_payment_webhook', ['provider' => 'stripe'], UrlGeneratorInterface::ABSOLUTE_URL);
 
         if ($request->isMethod('POST')) {
             try {

@@ -296,7 +296,7 @@ final class MollieSettingsTest extends TestCase
             }
         }
 
-        foreach ([401, 429, 500, 503] as $status) {
+        foreach ([401, 403, 408, 409, 429, 500, 503] as $status) {
             try {
                 $answer($status)->request('get', '/payments/tr_abcdef');
                 $this->fail('No exception for '.$status);

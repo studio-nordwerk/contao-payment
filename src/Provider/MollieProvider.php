@@ -12,6 +12,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
 use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
+use Nordwerk\PaymentBundle\Domain\RefundRejectedException;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
@@ -58,9 +59,8 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
             'cancelUrl' => $request->returnUrl.'?canceled=1',
             'metadata' => ['payment_id' => (string) $payment->id],
         ];
-        // From the router, so installations in a subdirectory get their base path.
-        $webhook = $this->router->generate('nw_payment_webhook', ['provider' => 'mollie'], UrlGeneratorInterface::ABSOLUTE_URL);
-        if (self::isPublicUrl($webhook)) {
+        $webhook = $this->webhookUrl($request->returnUrl);
+        if (null !== $webhook) {
             $body['webhookUrl'] = $webhook;
         }
         $mollie = $this->client->request('post', '/payments', $body, 'checkout:'.$payment->id);
@@ -74,6 +74,22 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
         }
 
         return new CheckoutResult($event->reference, $href);
+    }
+
+    /**
+     * Scheme, host and port of the public origin the shop was given (the same as for
+     * the return URL), the path from the router with the base path of the
+     * installation. Null if Mollie cannot reach it.
+     */
+    private function webhookUrl(string $returnUrl): string|null
+    {
+        $parts = parse_url($returnUrl);
+        if (!\is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+        $url = $parts['scheme'].'://'.$parts['host'].(isset($parts['port']) ? ':'.$parts['port'] : '').$this->router->generate('nw_payment_webhook', ['provider' => 'mollie'], UrlGeneratorInterface::ABSOLUTE_PATH);
+
+        return self::isPublicUrl($url) ? $url : null;
     }
 
     public function resumeCheckout(PaymentRequest $request): CheckoutResult
@@ -110,12 +126,19 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
         if (null !== $adopted) {
             return $adopted;
         }
-        $refund = $this->client->request(
-            'post',
-            '/payments/'.rawurlencode($payment->reference).'/refunds',
-            ['amount' => MollieAmount::format($money), 'description' => 'Erstattung', 'metadata' => ['payment_id' => (string) $payment->id, 'operation_token' => $operation]],
-            'refund:'.$operation,
-        );
+
+        try {
+            $refund = $this->client->request(
+                'post',
+                '/payments/'.rawurlencode($payment->reference).'/refunds',
+                ['amount' => MollieAmount::format($money), 'description' => 'Erstattung', 'metadata' => ['payment_id' => (string) $payment->id, 'operation_token' => $operation]],
+                'refund:'.$operation,
+            );
+        } catch (\InvalidArgumentException $exception) {
+            // Only clear rejections (Mollie 4xx, unsupported amount) get here; 409, 5xx and
+            // timeouts are RuntimeExceptions and leave the operation open.
+            throw new RefundRejectedException($exception->getMessage(), 0, $exception);
+        }
         $status = self::refundStatus($refund);
         $id = (string) ($refund['id'] ?? '');
         if (1 !== preg_match(self::REFUND_ID, $id)) {
@@ -128,20 +151,39 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
     /**
      * Current state of one refund together with its payment, for the cron reconciliation.
      */
-    public function refundEvent(string $eventId, Payment $payment, string $refundId): PaymentEvent
+    public function refundEvent(string $eventId, Payment $payment, string $refundId, int $amount = 0, string $operation = ''): PaymentEvent
     {
         if (1 !== preg_match(self::REFUND_ID, $refundId)) {
             throw new \InvalidArgumentException('Invalid Mollie refund id.');
         }
-        $refund = $this->client->request('get', '/payments/'.rawurlencode($payment->reference).'/refunds/'.$refundId);
+
+        try {
+            $refund = $this->client->request('get', '/payments/'.rawurlencode($payment->reference).'/refunds/'.$refundId);
+        } catch (MollieRejectedException $gone) {
+            // A canceled refund can disappear from the single lookup. The complete list of
+            // the payment decides: listed means its listed state, missing means canceled.
+            $refund = null;
+
+            foreach ($this->listRefunds($payment->reference) as $listed) {
+                if ($listed['id'] === $refundId) {
+                    $refund = $listed;
+                }
+            }
+            if (null === $refund) {
+                if ($amount < 1) {
+                    throw $gone;
+                }
+                $refund = ['id' => $refundId, 'status' => 'canceled', 'amount' => MollieAmount::format(new Money($amount, $payment->money->currency)), 'metadata' => ['operation_token' => $operation]];
+            }
+        }
         $event = $this->matching($payment, $this->fetch($payment));
-        $amount = MollieAmount::parse($refund['amount'] ?? null);
-        if (($refund['id'] ?? '') !== $refundId || $amount->currency !== $payment->money->currency || $amount->cents < 1 || $amount->cents > $payment->money->cents) {
+        $refundAmount = MollieAmount::parse($refund['amount'] ?? null);
+        if (($refund['id'] ?? '') !== $refundId || $refundAmount->currency !== $payment->money->currency || $refundAmount->cents < 1 || $refundAmount->cents > $payment->money->cents) {
             throw new \InvalidArgumentException('Refund does not match payment.');
         }
         $status = self::refundStatus($refund);
 
-        return new PaymentEvent($eventId, $event->paymentId, $event->reference, $event->status, $event->money, $event->refundedCents, $event->testMode, new RefundResult($refundId, RefundStatus::Succeeded === $status, $status), (string) ($refund['metadata']['operation_token'] ?? ''), $amount->cents);
+        return new PaymentEvent($eventId, $event->paymentId, $event->reference, $event->status, $event->money, $event->refundedCents, $event->testMode, new RefundResult($refundId, RefundStatus::Succeeded === $status, $status), (string) ($refund['metadata']['operation_token'] ?? ''), $refundAmount->cents);
     }
 
     public function fetchStatus(Payment $payment): PaymentStatus
@@ -267,18 +309,21 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
     }
 
     /**
-     * All refunds of a payment, page by page.
+     * All refunds of a payment. The pages are followed through _links.next (the
+     * "from" of Mollie is inclusive, so building it by hand would count a refund
+     * twice). A list that is not in the expected shape is unreadable, not empty.
      *
      * @return list<array<string, mixed>>
      */
     private function listRefunds(string $id): array
     {
         $all = [];
-        $from = null;
+        $path = '/payments/'.rawurlencode($id).'/refunds';
+        $parameters = ['limit' => 250];
 
         for ($page = 0; $page < 20; ++$page) {
-            $list = $this->client->request('get', '/payments/'.rawurlencode($id).'/refunds', ['limit' => 250] + (null === $from ? [] : ['from' => $from]));
-            $refunds = $list['_embedded']['refunds'] ?? [];
+            $list = $this->client->request('get', $path, $parameters);
+            $refunds = $list['_embedded']['refunds'] ?? null;
             if (!\is_array($refunds)) {
                 throw new \InvalidArgumentException('Invalid Mollie refund list.');
             }
@@ -287,11 +332,23 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
                 if (!\is_array($refund) || !\is_string($refund['id'] ?? null)) {
                     throw new \InvalidArgumentException('Invalid Mollie refund.');
                 }
-                $all[] = $refund;
-                $from = $refund['id'];
+                $all[$refund['id']] = $refund;
             }
-            if (!isset($list['_links']['next']['href']) || [] === $refunds) {
-                return $all;
+            $next = $list['_links']['next']['href'] ?? null;
+            if (null === $next) {
+                return array_values($all);
+            }
+            // Only path and query count: the host stays the configured API endpoint.
+            $target = \is_string($next) ? parse_url($next) : false;
+            if (!\is_array($target) || 1 !== preg_match('#^(?:/v2)?(/payments/'.preg_quote(rawurlencode($id), '#').'/refunds)$#D', $target['path'] ?? '', $match)) {
+                throw new \InvalidArgumentException('Invalid Mollie refund list link.');
+            }
+            $path = $match[1];
+            parse_str($target['query'] ?? '', $query);
+            $parameters = [];
+
+            foreach ($query as $name => $value) {
+                $parameters[(string) $name] = $value;
             }
         }
 

@@ -59,8 +59,10 @@ final readonly class MollieClient implements MollieClientInterface
         }
         // A request Mollie rejects (unknown id, invalid data) is the caller's problem
         // and no reason to retry.
-        if ($status >= 400 && $status < 500 && 429 !== $status && 401 !== $status && 403 !== $status) {
-            throw new \InvalidArgumentException('Mollie rejected the request ('.$status.').');
+        if ($status >= 400 && $status < 500 && !\in_array($status, [401, 403, 408, 409, 425, 429], true)) {
+            $detail = \is_string($data['detail'] ?? null) ? ': '.mb_substr($data['detail'], 0, 160) : '';
+
+            throw new MollieRejectedException('Mollie rejected the request ('.$status.')'.$detail);
         }
 
         throw new \RuntimeException('Mollie request failed ('.$status.').');
