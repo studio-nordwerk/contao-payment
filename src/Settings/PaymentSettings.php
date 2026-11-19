@@ -17,12 +17,12 @@ final readonly class PaymentSettings
     /**
      * Switches (char(1) columns) and their value without a record.
      */
-    public const SWITCHES = ['bankEnabled' => true, 'stripeEnabled' => false, 'testMode' => true, 'onSiteEnabled' => false];
+    public const SWITCHES = ['bankEnabled' => true, 'stripeEnabled' => false, 'testMode' => true, 'onSiteEnabled' => false, 'mollieEnabled' => false];
 
     /**
      * Text columns. Secrets are stored encrypted; empty values are left out of stored().
      */
-    public const VALUES = ['secretKey', 'webhookSecret', 'endpointId', 'webhookIdentity', 'webhookOperation', 'payPalMe'];
+    public const VALUES = ['secretKey', 'webhookSecret', 'endpointId', 'webhookIdentity', 'webhookOperation', 'payPalMe', 'mollieApiKey'];
 
     /**
      * Belongs to one Stripe key and mode; reset when either changes.
@@ -80,6 +80,7 @@ final readonly class PaymentSettings
                 'bank_transfer' => (bool) $data['bankEnabled'],
                 'on_site' => (bool) $data['onSiteEnabled'],
                 'stripe' => (bool) $data['stripeEnabled'] && '' !== $this->secretKey() && '' !== $this->webhookSecret(),
+                'mollie' => (bool) $data['mollieEnabled'] && '' !== $this->mollieApiKey(),
                 default => false,
             };
         } catch (\InvalidArgumentException|\RuntimeException) {
@@ -127,19 +128,40 @@ final readonly class PaymentSettings
         return $key;
     }
 
+    /**
+     * The test mode switch applies to all online providers; test_ keys in test mode,
+     * live_ keys otherwise.
+     */
+    public function mollieApiKey(): string
+    {
+        $key = $this->secret('mollieApiKey', 'NW_PAYMENT_MOLLIE_API_KEY');
+        if ('' !== $key && !str_starts_with($key, $this->testMode() ? 'test_' : 'live_')) {
+            throw new \InvalidArgumentException('Mollie-API-Key passt nicht zum Testmodus.');
+        }
+
+        return $key;
+    }
+
     public function webhookSecret(): string
     {
         return $this->secret('webhookSecret', 'NW_PAYMENT_STRIPE_WEBHOOK_SECRET');
     }
 
     /**
-     * Empty $key or $webhook keeps the stored secret.
+     * Empty $key, $webhook or $mollieKey keeps the stored secret; a null $mollie
+     * keeps the Mollie switch.
      */
-    public function save(bool $bank, bool $stripe, bool $test, string $key, string $webhook): void
+    public function save(bool $bank, bool $stripe, bool $test, string $key, string $webhook, bool|null $mollie = null, string $mollieKey = ''): void
     {
         $this->connection->transactional(
-            function () use ($bank, $stripe, $test, $key, $webhook): void {
+            function () use ($bank, $stripe, $test, $key, $webhook, $mollie, $mollieKey): void {
                 $changes = ['bankEnabled' => $bank ? '1' : '', 'stripeEnabled' => $stripe ? '1' : '', 'testMode' => $test ? '1' : ''];
+                if (null !== $mollie) {
+                    $changes['mollieEnabled'] = $mollie ? '1' : '';
+                }
+                if ('' !== $mollieKey) {
+                    $changes['mollieApiKey'] = $mollieKey;
+                }
                 if ('' !== $key) {
                     $changes['secretKey'] = $key;
                 }
@@ -168,8 +190,20 @@ final readonly class PaymentSettings
         $test = $switch('testMode');
         $key = trim((string) ($changes['secretKey'] ?? ''));
         $webhook = trim((string) ($changes['webhookSecret'] ?? ''));
-        if ($current['testMode'] !== $test && '' === $key) {
-            throw new SettingsException('modeChangeNeedsKey', 'Beim Moduswechsel den passenden Stripe-Schlüssel neu eintragen.');
+        $mollie = trim((string) ($changes['mollieApiKey'] ?? ''));
+        // The mode applies to all online providers, so only the providers that have a
+        // stored key need a new one; a Mollie-only shop is not asked for a Stripe key
+        // and vice versa.
+        if ($current['testMode'] !== $test) {
+            if ('' === $key && isset($current['secretKey'])) {
+                throw new SettingsException('modeChangeNeedsKey', 'Beim Moduswechsel den passenden Stripe-Schlüssel neu eintragen.');
+            }
+            if ('' === $mollie && isset($current['mollieApiKey'])) {
+                throw new SettingsException('modeChangeNeedsMollieKey', 'Beim Moduswechsel den passenden Mollie-API-Key neu eintragen.');
+            }
+        }
+        if ('' !== $mollie && !str_starts_with($mollie, $test ? 'test_' : 'live_')) {
+            throw new SettingsException('mollieKeyModeMismatch', 'Mollie-API-Key passt nicht zum Testmodus.');
         }
         if ('' !== $key && !preg_match($test ? '/^(sk|rk)_test_/' : '/^(sk|rk)_live_/', $key)) {
             throw new SettingsException('keyModeMismatch', 'Stripe-Schlüssel passt nicht zum Testmodus.');
@@ -183,8 +217,23 @@ final readonly class PaymentSettings
         } catch (\RuntimeException) {
             $oldKey = '';
         }
+
+        try {
+            $oldMollie = isset($current['mollieApiKey']) ? $this->cipher->decrypt((string) $current['mollieApiKey']) : '';
+        } catch (\RuntimeException) {
+            $oldMollie = '';
+        }
+        // The old key is dropped on a change, so nothing may still depend on it: open payments
+        // and refunds of the old mode could no longer be read from the provider.
+        $modeChanged = $current['testMode'] !== $test;
+        if (isset($current['secretKey']) && ($modeChanged || ('' !== $key && $oldKey !== $key))) {
+            $this->assertNothingOpen('stripe', $current['testMode'], 'openPaymentsStripe', 'Stripe');
+        }
+        if (isset($current['mollieApiKey']) && ($modeChanged || ('' !== $mollie && $oldMollie !== $mollie))) {
+            $this->assertNothingOpen('mollie', $current['testMode'], 'openPaymentsMollie', 'Mollie');
+        }
         $update = $changes;
-        unset($update['secretKey'], $update['webhookSecret']);
+        unset($update['secretKey'], $update['webhookSecret'], $update['mollieApiKey']);
 
         foreach (array_keys(self::SWITCHES) as $field) {
             if (\array_key_exists($field, $update)) {
@@ -196,8 +245,14 @@ final readonly class PaymentSettings
                 $update[$field] = '';
             }
         }
+        if ($current['testMode'] !== $test) {
+            $update['mollieApiKey'] = '';
+        }
         if ('' !== $key) {
             $update['secretKey'] = $this->cipher->encrypt($key);
+        }
+        if ('' !== $mollie) {
+            $update['mollieApiKey'] = $this->cipher->encrypt($mollie);
         }
         if ('' !== $webhook) {
             $update['webhookSecret'] = $this->cipher->encrypt($webhook);
@@ -207,8 +262,20 @@ final readonly class PaymentSettings
         if ($switch('stripeEnabled') && ('' === $storedKey || '' === $storedWebhook)) {
             throw new SettingsException('stripeIncomplete', 'Stripe zunächst ausgeschaltet speichern, dann Webhook anlegen und Stripe einschalten.');
         }
+        if ($switch('mollieEnabled') && '' === ($update['mollieApiKey'] ?? ($current['mollieApiKey'] ?? ''))) {
+            throw new SettingsException('mollieIncomplete', 'Mollie lässt sich nur mit gespeichertem API-Key einschalten.');
+        }
 
         return $update;
+    }
+
+    private function assertNothingOpen(string $provider, bool $testMode, string $reason, string $name): void
+    {
+        $open = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM tl_nw_payment WHERE provider = ? AND test_mode = ? AND status IN ('open', 'pending')", [$provider, $testMode ? 1 : 0]);
+        $refunds = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider = ? AND p.test_mode = ? AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action')", [$provider, $testMode ? 1 : 0]);
+        if ($open + $refunds > 0) {
+            throw new SettingsException($reason, $name.': Es gibt noch offene Zahlungen oder Erstattungen im bisherigen Modus. Zuerst abschließen, dann Modus oder Schlüssel wechseln.');
+        }
     }
 
     public function prepareWebhook(string $url): void
@@ -254,23 +321,36 @@ final readonly class PaymentSettings
     public function missing(): array
     {
         $data = $this->stored();
+        $missing = [];
 
         try {
             $this->secretKey();
             $this->webhookSecret();
             if ($data['stripeEnabled'] && !$this->enabled('stripe')) {
-                return ['Zahlung: Stripe-Schlüssel und Webhook-Secret ergänzen'];
-            }
-            if (!$this->enabled('bank_transfer') && !$this->enabled('stripe')) {
-                return ['Zahlung: mindestens einen Anbieter einrichten'];
+                $missing[] = 'Zahlung: Stripe-Schlüssel und Webhook-Secret ergänzen';
             }
         } catch (\RuntimeException) {
-            return ['Zahlung: Stripe-Schlüssel neu eingeben'];
+            $missing[] = 'Zahlung: Stripe-Schlüssel neu eingeben';
         } catch (\InvalidArgumentException) {
-            return ['Zahlung: Stripe-Schlüssel oder Testmodus prüfen'];
+            $missing[] = 'Zahlung: Stripe-Schlüssel oder Testmodus prüfen';
         }
 
-        return [];
+        try {
+            $this->mollieApiKey();
+            if ($data['mollieEnabled'] && !$this->enabled('mollie')) {
+                $missing[] = 'Zahlung: Mollie-API-Key ergänzen';
+            }
+        } catch (\RuntimeException) {
+            $missing[] = 'Zahlung: Mollie-API-Key neu eingeben';
+        } catch (\InvalidArgumentException) {
+            $missing[] = 'Zahlung: Mollie-API-Key oder Testmodus prüfen';
+        }
+
+        if ([] === $missing && !$this->enabled('bank_transfer') && !$this->enabled('stripe') && !$this->enabled('mollie')) {
+            $missing[] = 'Zahlung: mindestens einen Anbieter einrichten';
+        }
+
+        return $missing;
     }
 
     /**

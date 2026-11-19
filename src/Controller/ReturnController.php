@@ -7,6 +7,7 @@ namespace Nordwerk\PaymentBundle\Controller;
 use Doctrine\DBAL\Connection;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Persistence\PaymentRepository;
+use Nordwerk\PaymentBundle\Persistence\PaymentService;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Attribute\AsController;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -19,6 +20,7 @@ final readonly class ReturnController
     public function __construct(
         private Connection $connection,
         private PaymentRepository $repository,
+        private PaymentService $payments,
         private Environment $twig,
     ) {
     }
@@ -30,7 +32,7 @@ final readonly class ReturnController
         if (false === $id) {
             throw new NotFoundHttpException();
         }
-        $payment = $this->repository->find((int) $id);
+        $payment = $this->payments->refreshFromProvider($this->repository->find((int) $id));
         // Decided 2026-09-30: no automatic retry after failure/expiry; a new payment
         // link belongs to P4.
         $pending = \in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true);
