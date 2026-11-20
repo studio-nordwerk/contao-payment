@@ -22,6 +22,7 @@ use Nordwerk\PaymentBundle\Domain\RefundRejectedException;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
+use Nordwerk\PaymentBundle\Domain\ReturnUrlProviderInterface;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Psr\Log\LoggerInterface;
 
@@ -429,6 +430,20 @@ final readonly class PaymentService
     private function providerIds(\Closure $filter): array
     {
         return array_keys(array_filter($this->providers, $filter));
+    }
+
+    /**
+     * The consumer's page for this payment (ReturnUrlProviderInterface), null if none.
+     */
+    public function returnUrl(Payment $payment): string|null
+    {
+        foreach ($this->resolvers as $resolver) {
+            if ($resolver instanceof ReturnUrlProviderInterface && $resolver->supports($payment->payableType) && null !== ($url = $resolver->returnUrl($payment))) {
+                return $url;
+            }
+        }
+
+        return null;
     }
 
     /**
