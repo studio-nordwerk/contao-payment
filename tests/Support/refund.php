@@ -9,6 +9,7 @@ use Nordwerk\PaymentBundle\Domain\Money;
 use Nordwerk\PaymentBundle\Persistence\PaymentRepository;
 use Nordwerk\PaymentBundle\Persistence\PaymentService;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
+use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeClient;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -22,7 +23,7 @@ if (!is_array($parts)) {
 }
 $db = DriverManager::getConnection(['driver' => 'pdo_mysql', 'host' => $parts['host'] ?? 'db', 'user' => $parts['user'] ?? 'contao', 'password' => $parts['pass'] ?? 'contao', 'dbname' => ltrim($parts['path'] ?? '/contao', '/')]);
 $settings = new PaymentSettings($db, new SecretCipher((string) getenv('APP_SECRET')));
-$service = new PaymentService($db, new PaymentRepository($db), new BankTransferProvider(), new StripeProvider(new StripeClient($settings), $settings), $settings, [], new NullLogger());
+$service = new PaymentService($db, new PaymentRepository($db), $settings, [new BankTransferProvider(), new StripeProvider(new StripeClient($settings), $settings), new OnSiteProvider()], [], new NullLogger());
 echo "ready\n";
 
 try {

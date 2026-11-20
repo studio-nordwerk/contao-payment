@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Nordwerk\PaymentBundle\Backend;
 
 use Contao\CoreBundle\DependencyInjection\Attribute\AsCallback;
+use Contao\CoreBundle\DependencyInjection\Attribute\AsHook;
 use Contao\CoreBundle\Exception\AccessDeniedException;
 use Contao\CoreBundle\Exception\RedirectResponseException;
 use Contao\CoreBundle\Security\ContaoCorePermissions;
@@ -59,15 +60,27 @@ final readonly class SettingsDataContainer
     }
 
     /**
-     * Secrets are write-only: the form starts empty, and an empty field keeps the
-     * stored value (doNotSaveEmpty).
+     * Secrets of every provider are write-only, also those of providers from other
+     * bundles: the form starts empty, an empty field keeps the stored value
+     * (doNotSaveEmpty), and neither the show view, the version diff nor tl_version
+     * contains them.
      */
-    #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.secretKey.load')]
-    #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.webhookSecret.load')]
-    #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.mollieApiKey.load')]
-    public function hideSecret(): string
+    #[AsHook('loadDataContainer')]
+    public function protectSecrets(string $table): void
     {
-        return '';
+        if ('tl_nw_payment_settings' !== $table) {
+            return;
+        }
+
+        foreach ($this->settings->secretFields() as $field) {
+            if (!isset($GLOBALS['TL_DCA'][$table]['fields'][$field])) {
+                continue;
+            }
+            $config = &$GLOBALS['TL_DCA'][$table]['fields'][$field];
+            $config['eval'] = [...$config['eval'] ?? [], 'hideInput' => true, 'doNotSaveEmpty' => true, 'versionize' => false, 'autocomplete' => 'new-password'];
+            $config['load_callback'] = [...$config['load_callback'] ?? [], static fn (): string => ''];
+            unset($config);
+        }
     }
 
     #[AsCallback(table: 'tl_nw_payment_settings', target: 'fields.payPalMe.load')]
@@ -87,9 +100,9 @@ final readonly class SettingsDataContainer
     }
 
     /**
-     * Rules that span several fields (mode and keys, Stripe only with both secrets,
-     * Mollie only with its key) and encryption of the secrets. Nothing is stored if a
-     * rule fails.
+     * Rules that span several fields (mode and keys, each provider only with its
+     * credentials; see the provider sections) and encryption of the secrets. Nothing
+     * is stored if a rule fails.
      *
      * @param array<string, mixed> $values
      *
@@ -100,9 +113,12 @@ final readonly class SettingsDataContainer
     {
         try {
             $update = $this->settings->applyChanges($dc->getCurrentRecord() ?? [], $values);
+
             // Never let a submitted plaintext secret through; applyChanges() returns the
             // encrypted value.
-            unset($values['secretKey'], $values['webhookSecret'], $values['mollieApiKey']);
+            foreach ($this->settings->secretFields() as $field) {
+                unset($values[$field]);
+            }
 
             return [...$values, ...$update];
         } catch (SettingsException $exception) {

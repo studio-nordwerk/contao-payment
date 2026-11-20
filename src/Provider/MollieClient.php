@@ -23,7 +23,7 @@ final readonly class MollieClient implements MollieClientInterface
         if (!\in_array($method, ['get', 'post'], true) || !str_starts_with($path, '/')) {
             throw new \InvalidArgumentException('Invalid Mollie request.');
         }
-        $key = $this->settings->mollieApiKey();
+        $key = $this->settings->secret('mollieApiKey');
         if ('' === $key) {
             throw new \RuntimeException('Mollie API key is missing.');
         }

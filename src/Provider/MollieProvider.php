@@ -10,12 +10,14 @@ use Nordwerk\PaymentBundle\Domain\Payment;
 use Nordwerk\PaymentBundle\Domain\PaymentEvent;
 use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
-use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
+use Nordwerk\PaymentBundle\Domain\PolledProviderInterface;
+use Nordwerk\PaymentBundle\Domain\RefundReconcilerInterface;
 use Nordwerk\PaymentBundle\Domain\RefundRejectedException;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
+use Nordwerk\PaymentBundle\Domain\UnsignedWebhookInterface;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
@@ -25,7 +27,7 @@ use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
  * signature, only a payment id; the state is therefore always read from the API with
  * our own key and compared with the stored payment (PaymentService::apply()).
  */
-final readonly class MollieProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface, ResumableCheckoutInterface
+final readonly class MollieProvider implements PaymentProviderInterface, PolledProviderInterface, ResumableCheckoutInterface, RefundReconcilerInterface, UnsignedWebhookInterface
 {
     public const PAYMENT_ID = '/^tr_[A-Za-z0-9]{4,64}$/D';
     private const REFUND_ID = '/^re_[A-Za-z0-9]{4,64}$/D';
@@ -47,6 +49,38 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
         $host = \is_array($parts) ? strtolower(trim($parts['host'] ?? '', '[]')) : '';
 
         return \in_array($scheme, ['http', 'https'], true) && self::publicHost($host);
+    }
+
+    public static function id(): string
+    {
+        return 'mollie';
+    }
+
+    public static function priority(): int
+    {
+        return 20;
+    }
+
+    public function name(): string
+    {
+        return 'Mollie';
+    }
+
+    public function label(): string
+    {
+        return 'Online bezahlen (Mollie)';
+    }
+
+    public function online(): bool
+    {
+        return true;
+    }
+
+    public function webhookReference(Request $request): string|null
+    {
+        $id = $request->request->all()['id'] ?? null;
+
+        return \is_string($id) && 1 === preg_match(self::PAYMENT_ID, $id) ? $id : null;
     }
 
     public function createCheckout(PaymentRequest $request): CheckoutResult
@@ -151,21 +185,21 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
     /**
      * Current state of one refund together with its payment, for the cron reconciliation.
      */
-    public function refundEvent(string $eventId, Payment $payment, string $refundId, int $amount = 0, string $operation = ''): PaymentEvent
+    public function refundEvent(string $eventId, Payment $payment, string $refundReference, int $amount = 0, string $operation = ''): PaymentEvent
     {
-        if (1 !== preg_match(self::REFUND_ID, $refundId)) {
+        if (1 !== preg_match(self::REFUND_ID, $refundReference)) {
             throw new \InvalidArgumentException('Invalid Mollie refund id.');
         }
 
         try {
-            $refund = $this->client->request('get', '/payments/'.rawurlencode($payment->reference).'/refunds/'.$refundId);
+            $refund = $this->client->request('get', '/payments/'.rawurlencode($payment->reference).'/refunds/'.$refundReference);
         } catch (MollieRejectedException $gone) {
             // A canceled refund can disappear from the single lookup. The complete list of
             // the payment decides: listed means its listed state, missing means canceled.
             $refund = null;
 
             foreach ($this->listRefunds($payment->reference) as $listed) {
-                if ($listed['id'] === $refundId) {
+                if ($listed['id'] === $refundReference) {
                     $refund = $listed;
                 }
             }
@@ -173,17 +207,17 @@ final readonly class MollieProvider implements PaymentProviderInterface, Payment
                 if ($amount < 1) {
                     throw $gone;
                 }
-                $refund = ['id' => $refundId, 'status' => 'canceled', 'amount' => MollieAmount::format(new Money($amount, $payment->money->currency)), 'metadata' => ['operation_token' => $operation]];
+                $refund = ['id' => $refundReference, 'status' => 'canceled', 'amount' => MollieAmount::format(new Money($amount, $payment->money->currency)), 'metadata' => ['operation_token' => $operation]];
             }
         }
         $event = $this->matching($payment, $this->fetch($payment));
         $refundAmount = MollieAmount::parse($refund['amount'] ?? null);
-        if (($refund['id'] ?? '') !== $refundId || $refundAmount->currency !== $payment->money->currency || $refundAmount->cents < 1 || $refundAmount->cents > $payment->money->cents) {
+        if (($refund['id'] ?? '') !== $refundReference || $refundAmount->currency !== $payment->money->currency || $refundAmount->cents < 1 || $refundAmount->cents > $payment->money->cents) {
             throw new \InvalidArgumentException('Refund does not match payment.');
         }
         $status = self::refundStatus($refund);
 
-        return new PaymentEvent($eventId, $event->paymentId, $event->reference, $event->status, $event->money, $event->refundedCents, $event->testMode, new RefundResult($refundId, RefundStatus::Succeeded === $status, $status), (string) ($refund['metadata']['operation_token'] ?? ''), $refundAmount->cents);
+        return new PaymentEvent($eventId, $event->paymentId, $event->reference, $event->status, $event->money, $event->refundedCents, $event->testMode, new RefundResult($refundReference, RefundStatus::Succeeded === $status, $status), (string) ($refund['metadata']['operation_token'] ?? ''), $refundAmount->cents);
     }
 
     public function fetchStatus(Payment $payment): PaymentStatus

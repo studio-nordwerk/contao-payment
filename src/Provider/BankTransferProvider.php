@@ -16,6 +16,31 @@ use Symfony\Component\HttpFoundation\Request;
 
 final class BankTransferProvider implements PaymentProviderInterface
 {
+    public static function id(): string
+    {
+        return 'bank_transfer';
+    }
+
+    public static function priority(): int
+    {
+        return 40;
+    }
+
+    public function name(): string
+    {
+        return 'Vorkasse';
+    }
+
+    public function label(): string
+    {
+        return 'Vorkasse per Überweisung';
+    }
+
+    public function online(): bool
+    {
+        return false;
+    }
+
     public function createCheckout(PaymentRequest $request): CheckoutResult
     {
         return new CheckoutResult('manual:'.$request->payment->id);

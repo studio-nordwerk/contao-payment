@@ -40,7 +40,7 @@ function startPayment(payable: string, cents: number): { id: number; redirect: s
     $mollie = new \\Nordwerk\\PaymentBundle\\Provider\\MollieProvider(new \\Nordwerk\\PaymentBundle\\Provider\\MollieClient($settings, \\Symfony\\Component\\HttpClient\\HttpClient::create()), $settings, new \\Symfony\\Component\\Routing\\Generator\\UrlGenerator($routes, new \\Symfony\\Component\\Routing\\RequestContext('', 'GET', '${new URL(origin).hostname}', 'http')));
     $repository = new \\Nordwerk\\PaymentBundle\\Persistence\\PaymentRepository($db);
     $stripe = new \\Nordwerk\\PaymentBundle\\Provider\\StripeProvider(new \\Nordwerk\\PaymentBundle\\Provider\\StripeClient($settings), $settings);
-    $service = new \\Nordwerk\\PaymentBundle\\Persistence\\PaymentService($db, $repository, new \\Nordwerk\\PaymentBundle\\Provider\\BankTransferProvider(), $stripe, $settings, [], new \\Psr\\Log\\NullLogger(), mollie: $mollie);
+    $service = new \\Nordwerk\\PaymentBundle\\Persistence\\PaymentService($db, $repository, $settings, [new \\Nordwerk\\PaymentBundle\\Provider\\BankTransferProvider(), $stripe, $mollie], [], new \\Psr\\Log\\NullLogger());
     $checkout = $service->start('e2e-mollie', '${payable}', new \\Nordwerk\\PaymentBundle\\Domain\\Money(${cents}), 'mollie', '${origin}', 'E2E-Bestellung');
     echo json_encode(['id' => $repository->forPayable('e2e-mollie', '${payable}')->id, 'redirect' => $checkout->redirectUrl]);`;
   return JSON.parse(

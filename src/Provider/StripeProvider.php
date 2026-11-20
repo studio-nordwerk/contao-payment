@@ -12,6 +12,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
 use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
+use Nordwerk\PaymentBundle\Domain\RefundReconcilerInterface;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
@@ -20,7 +21,7 @@ use Stripe\Exception\SignatureVerificationException;
 use Stripe\Webhook;
 use Symfony\Component\HttpFoundation\Request;
 
-final readonly class StripeProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface, ResumableCheckoutInterface
+final readonly class StripeProvider implements PaymentProviderInterface, PaymentSnapshotProviderInterface, ResumableCheckoutInterface, RefundReconcilerInterface
 {
     public const EVENTS = ['checkout.session.completed', 'checkout.session.async_payment_succeeded', 'checkout.session.async_payment_failed', 'checkout.session.expired', 'charge.refunded', 'refund.created', 'refund.updated', 'refund.failed'];
 
@@ -28,6 +29,31 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         private StripeClientInterface $client,
         private PaymentSettings $settings,
     ) {
+    }
+
+    public static function id(): string
+    {
+        return 'stripe';
+    }
+
+    public static function priority(): int
+    {
+        return 30;
+    }
+
+    public function name(): string
+    {
+        return 'Stripe';
+    }
+
+    public function label(): string
+    {
+        return 'Online bezahlen (Stripe)';
+    }
+
+    public function online(): bool
+    {
+        return true;
     }
 
     public function createCheckout(PaymentRequest $request): CheckoutResult
@@ -70,7 +96,7 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
 
     public function parseWebhook(Request $request): PaymentEvent
     {
-        $secret = $this->settings->webhookSecret();
+        $secret = $this->settings->secret('webhookSecret');
         if ('' === $secret) {
             throw new \InvalidArgumentException('Webhook secret is missing.');
         }
@@ -88,7 +114,7 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         }
         $object = $event['data']['object'];
         if (str_starts_with($type, 'refund.')) {
-            return $this->refundEvent((string) $event['id'], (string) $object['id']);
+            return $this->refundState((string) $event['id'], (string) $object['id']);
         }
         if ('charge.refunded' === $type) {
             $sessions = $this->client->request('get', '/v1/checkout/sessions', ['payment_intent' => $object['payment_intent'], 'limit' => 1]);
@@ -122,7 +148,12 @@ final readonly class StripeProvider implements PaymentProviderInterface, Payment
         return new RefundResult((string) $refund['id'], 'succeeded' === $refund['status'], RefundStatus::from((string) $refund['status']));
     }
 
-    public function refundEvent(string $eventId, string $reference): PaymentEvent
+    public function refundEvent(string $eventId, Payment $payment, string $refundReference, int $amount, string $operation): PaymentEvent
+    {
+        return $this->refundState($eventId, $refundReference);
+    }
+
+    private function refundState(string $eventId, string $reference): PaymentEvent
     {
         // Read current provider state so delayed events cannot revive a failed refund.
         $refund = $this->client->request('get', '/v1/refunds/'.rawurlencode($reference));

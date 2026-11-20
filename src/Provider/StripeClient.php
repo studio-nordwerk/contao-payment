@@ -18,7 +18,7 @@ final readonly class StripeClient implements StripeClientInterface
         if (!\in_array($method, ['get', 'post', 'delete'], true)) {
             throw new \InvalidArgumentException('Invalid Stripe method.');
         }
-        $options = ['api_key' => $this->settings->secretKey()];
+        $options = ['api_key' => $this->settings->secret('secretKey')];
         $base = getenv('NW_PAYMENT_STRIPE_API_BASE');
         if (false !== $base && '' !== $base) {
             if (!$this->settings->testMode()) {
