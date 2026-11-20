@@ -18,6 +18,7 @@ use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
 use Nordwerk\PaymentBundle\Provider\MollieClientInterface;
 use Nordwerk\PaymentBundle\Provider\MollieProvider;
 use Nordwerk\PaymentBundle\Provider\MollieRejectedException;
+use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeClientInterface;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -60,7 +61,7 @@ final class MollieProviderTest extends TestCase
         $routes->add('nw_payment_webhook', new Route('/_nw/payment/webhook/{provider}'));
         $this->context = new RequestContext('', 'GET', 'shop.example', 'https');
         $this->mollie = new MollieProvider($this->client, $this->settings, new UrlGenerator($routes, $this->context));
-        $this->service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($this->createMock(StripeClientInterface::class), $this->settings), $this->settings, [], new NullLogger(), mollie: $this->mollie);
+        $this->service = new PaymentService($this->db, $this->repository, $this->settings, [new BankTransferProvider(), new StripeProvider($this->createMock(StripeClientInterface::class), $this->settings), new OnSiteProvider(), $this->mollie], [], new NullLogger());
     }
 
     protected function tearDown(): void

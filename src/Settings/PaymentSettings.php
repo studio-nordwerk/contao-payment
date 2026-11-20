@@ -8,31 +8,50 @@ use Doctrine\DBAL\Connection;
 use Nordwerk\PaymentBundle\OnSite\PayPalMe;
 
 /**
- * Reads and writes the one settings record tl_nw_payment_settings (id 1). The
- * backend form (DC_Table) and the programmatic methods below share
- * applyChanges(), so both enforce the same rules.
+ * Reads and writes the one settings record tl_nw_payment_settings (id 1). The backend
+ * form (DC_Table) and the programmatic methods below share applyChanges(), so both
+ * enforce the same rules. What belongs to one provider (its columns, when it takes
+ * payments, the rules of a change) is in its ProviderSettingsInterface section; here
+ * only the mode, the storage and the encryption.
  */
 final readonly class PaymentSettings
 {
     /**
-     * Switches (char(1) columns) and their value without a record.
+     * Switches and text columns of the former JSON format, for
+     * SettingsColumnsMigration only. Current columns come from the provider sections.
      */
     public const SWITCHES = ['bankEnabled' => true, 'stripeEnabled' => false, 'testMode' => true, 'onSiteEnabled' => false, 'mollieEnabled' => false];
 
-    /**
-     * Text columns. Secrets are stored encrypted; empty values are left out of stored().
-     */
     public const VALUES = ['secretKey', 'webhookSecret', 'endpointId', 'webhookIdentity', 'webhookOperation', 'payPalMe', 'mollieApiKey'];
 
     /**
-     * Belongs to one Stripe key and mode; reset when either changes.
+     * @var array<string, ProviderSettingsInterface> provider id => section, in checkout order
      */
-    private const WEBHOOK = ['webhookSecret', 'endpointId', 'webhookIdentity', 'webhookOperation'];
+    private array $sections;
 
+    /**
+     * @param iterable<ProviderSettingsInterface>|null $sections null: the built-in providers
+     */
     public function __construct(
         private Connection $connection,
         private SecretCipher $cipher,
+        iterable|null $sections = null,
     ) {
+        $this->sections = self::index($sections ?? self::builtIn());
+    }
+
+    /**
+     * Settings in the stored() format for a record of the built-in providers.
+     *
+     * @deprecated use stored()
+     *
+     * @param array<string, mixed> $row
+     *
+     * @return array<string, mixed>
+     */
+    public static function fromRow(array $row): array
+    {
+        return self::read(self::index(self::builtIn()), $row);
     }
 
     /**
@@ -45,23 +64,31 @@ final readonly class PaymentSettings
     {
         $row = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_settings WHERE id = 1');
 
-        return self::fromRow(false === $row ? [] : $row);
+        return self::read($this->sections, false === $row ? [] : $row);
     }
 
     /**
-     * @param array<string, mixed> $row
+     * @param array<string, ProviderSettingsInterface> $sections
+     * @param array<string, mixed>                     $row
      *
      * @return array<string, mixed>
      */
-    public static function fromRow(array $row): array
+    private static function read(array $sections, array $row): array
     {
+        $switches = ['testMode' => true];
+        $values = [];
+
+        foreach ($sections as $section) {
+            $switches = [...$switches, ...$section->switches()];
+            $values = [...$values, ...array_keys($section->secrets()), ...$section->values()];
+        }
         $data = [];
 
-        foreach (self::SWITCHES as $field => $default) {
+        foreach ($switches as $field => $default) {
             $data[$field] = \array_key_exists($field, $row) ? '1' === (string) $row[$field] : $default;
         }
 
-        foreach (self::VALUES as $field) {
+        foreach ($values as $field) {
             $value = (string) ($row[$field] ?? '');
             if ('' !== $value) {
                 $data[$field] = $value;
@@ -71,21 +98,35 @@ final readonly class PaymentSettings
         return $data;
     }
 
+    /**
+     * Ids of the providers with settings, in checkout order.
+     *
+     * @return list<string>
+     */
+    public function providers(): array
+    {
+        return array_keys($this->sections);
+    }
+
+    /**
+     * Columns of all secrets; they are write-only and stored encrypted.
+     *
+     * @return list<string>
+     */
+    public function secretFields(): array
+    {
+        $fields = [];
+
+        foreach ($this->sections as $section) {
+            $fields = [...$fields, ...array_keys($section->secrets())];
+        }
+
+        return $fields;
+    }
+
     public function enabled(string $provider): bool
     {
-        $data = $this->stored();
-
-        try {
-            return match ($provider) {
-                'bank_transfer' => (bool) $data['bankEnabled'],
-                'on_site' => (bool) $data['onSiteEnabled'],
-                'stripe' => (bool) $data['stripeEnabled'] && '' !== $this->secretKey() && '' !== $this->webhookSecret(),
-                'mollie' => (bool) $data['mollieEnabled'] && '' !== $this->mollieApiKey(),
-                default => false,
-            };
-        } catch (\InvalidArgumentException|\RuntimeException) {
-            return false;
-        }
+        return $this->enabledIn($this->view(), $provider);
     }
 
     /**
@@ -118,65 +159,87 @@ final readonly class PaymentSettings
         return false !== $override && '' !== $override ? '1' === $override : (bool) $this->stored()['testMode'];
     }
 
-    public function secretKey(): string
+    /**
+     * A secret in plain text, '' if none is stored: the environment variable of its
+     * provider first, then the stored value.
+     *
+     * @throws \RuntimeException         if it cannot be decrypted
+     * @throws \InvalidArgumentException if it does not fit the mode
+     */
+    public function secret(string $field): string
     {
-        $key = $this->secret('secretKey', 'NW_PAYMENT_STRIPE_SECRET_KEY');
-        if ('' !== $key && !preg_match($this->testMode() ? '/^(sk|rk)_test_/' : '/^(sk|rk)_live_/', $key)) {
-            throw new \InvalidArgumentException('Stripe-Schlüssel passt nicht zum Testmodus.');
-        }
+        $section = $this->owner($field);
+        $value = $this->override($section, $field) ?? $this->decrypt($this->stored(), $field);
+        $section->checkSecret($field, $value, $this->testMode());
 
-        return $key;
+        return $value;
     }
 
     /**
-     * The test mode switch applies to all online providers; test_ keys in test mode,
-     * live_ keys otherwise.
+     * @deprecated use secret('secretKey')
+     */
+    public function secretKey(): string
+    {
+        return $this->secret('secretKey');
+    }
+
+    /**
+     * @deprecated use secret('mollieApiKey')
      */
     public function mollieApiKey(): string
     {
-        $key = $this->secret('mollieApiKey', 'NW_PAYMENT_MOLLIE_API_KEY');
-        if ('' !== $key && !str_starts_with($key, $this->testMode() ? 'test_' : 'live_')) {
-            throw new \InvalidArgumentException('Mollie-API-Key passt nicht zum Testmodus.');
-        }
-
-        return $key;
+        return $this->secret('mollieApiKey');
     }
 
+    /**
+     * @deprecated use secret('webhookSecret')
+     */
     public function webhookSecret(): string
     {
-        return $this->secret('webhookSecret', 'NW_PAYMENT_STRIPE_WEBHOOK_SECRET');
+        return $this->secret('webhookSecret');
     }
 
     /**
      * Empty $key, $webhook or $mollieKey keeps the stored secret; a null $mollie
      * keeps the Mollie switch.
+     *
+     * @deprecated use update()
      */
     public function save(bool $bank, bool $stripe, bool $test, string $key, string $webhook, bool|null $mollie = null, string $mollieKey = ''): void
     {
+        $changes = ['bankEnabled' => $bank, 'stripeEnabled' => $stripe, 'testMode' => $test, 'secretKey' => $key, 'webhookSecret' => $webhook, 'mollieApiKey' => $mollieKey];
+        if (null !== $mollie) {
+            $changes['mollieEnabled'] = $mollie;
+        }
+        $this->update($changes);
+    }
+
+    /**
+     * Stores changed columns under the same rules as the backend form. Switches as booleans
+     * or '1'/'', secrets in plain text; an empty secret keeps the stored one.
+     *
+     * @param array<string, mixed> $changes
+     *
+     * @throws SettingsException
+     */
+    public function update(array $changes): void
+    {
+        foreach ($changes as $field => $value) {
+            if (\is_bool($value)) {
+                $changes[$field] = $value ? '1' : '';
+            }
+        }
         $this->connection->transactional(
-            function () use ($bank, $stripe, $test, $key, $webhook, $mollie, $mollieKey): void {
-                $changes = ['bankEnabled' => $bank ? '1' : '', 'stripeEnabled' => $stripe ? '1' : '', 'testMode' => $test ? '1' : ''];
-                if (null !== $mollie) {
-                    $changes['mollieEnabled'] = $mollie ? '1' : '';
-                }
-                if ('' !== $mollieKey) {
-                    $changes['mollieApiKey'] = $mollieKey;
-                }
-                if ('' !== $key) {
-                    $changes['secretKey'] = $key;
-                }
-                if ('' !== $webhook) {
-                    $changes['webhookSecret'] = $webhook;
-                }
+            function () use ($changes): void {
                 $this->persist($this->applyChanges($this->lockedRow(), $changes));
             },
         );
     }
 
     /**
-     * Validates submitted changes against the current record and returns the column
-     * values to store: secrets encrypted, webhook data reset after a change of key or
-     * mode. Plaintext secrets in $changes are replaced.
+     * Validates submitted changes against the current record and returns the column values
+     * to store: secrets encrypted, data of a provider reset as its section decides (e.g.
+     * after a change of key or mode). Plaintext secrets in $changes are replaced.
      *
      * @param array<string, mixed> $row     current database record (may be empty)
      * @param array<string, mixed> $changes changed columns; switches as '1'/'', secrets as plaintext
@@ -185,85 +248,53 @@ final readonly class PaymentSettings
      */
     public function applyChanges(array $row, array $changes): array
     {
-        $current = self::fromRow($row);
-        $switch = static fn (string $field): bool => \array_key_exists($field, $changes) ? '1' === (string) $changes[$field] : (bool) $current[$field];
-        $test = $switch('testMode');
-        $key = trim((string) ($changes['secretKey'] ?? ''));
-        $webhook = trim((string) ($changes['webhookSecret'] ?? ''));
-        $mollie = trim((string) ($changes['mollieApiKey'] ?? ''));
-        // The mode applies to all online providers, so only the providers that have a
-        // stored key need a new one; a Mollie-only shop is not asked for a Stripe key
-        // and vice versa.
-        if ($current['testMode'] !== $test) {
-            if ('' === $key && isset($current['secretKey'])) {
-                throw new SettingsException('modeChangeNeedsKey', 'Beim Moduswechsel den passenden Stripe-Schlüssel neu eintragen.');
-            }
-            if ('' === $mollie && isset($current['mollieApiKey'])) {
-                throw new SettingsException('modeChangeNeedsMollieKey', 'Beim Moduswechsel den passenden Mollie-API-Key neu eintragen.');
-            }
-        }
-        if ('' !== $mollie && !str_starts_with($mollie, $test ? 'test_' : 'live_')) {
-            throw new SettingsException('mollieKeyModeMismatch', 'Mollie-API-Key passt nicht zum Testmodus.');
-        }
-        if ('' !== $key && !preg_match($test ? '/^(sk|rk)_test_/' : '/^(sk|rk)_live_/', $key)) {
-            throw new SettingsException('keyModeMismatch', 'Stripe-Schlüssel passt nicht zum Testmodus.');
-        }
-        if ('' !== $webhook && !str_starts_with($webhook, 'whsec_')) {
-            throw new SettingsException('invalidWebhookSecret', 'Ungültiges Webhook-Secret.');
-        }
-
-        try {
-            $oldKey = isset($current['secretKey']) ? $this->cipher->decrypt((string) $current['secretKey']) : '';
-        } catch (\RuntimeException) {
-            $oldKey = '';
-        }
-
-        try {
-            $oldMollie = isset($current['mollieApiKey']) ? $this->cipher->decrypt((string) $current['mollieApiKey']) : '';
-        } catch (\RuntimeException) {
-            $oldMollie = '';
-        }
-        // The old key is dropped on a change, so nothing may still depend on it: open payments
-        // and refunds of the old mode could no longer be read from the provider.
-        $modeChanged = $current['testMode'] !== $test;
-        if (isset($current['secretKey']) && ($modeChanged || ('' !== $key && $oldKey !== $key))) {
-            $this->assertNothingOpen('stripe', $current['testMode'], 'openPaymentsStripe', 'Stripe');
-        }
-        if (isset($current['mollieApiKey']) && ($modeChanged || ('' !== $mollie && $oldMollie !== $mollie))) {
-            $this->assertNothingOpen('mollie', $current['testMode'], 'openPaymentsMollie', 'Mollie');
-        }
+        $current = self::read($this->sections, $row);
+        $change = new SettingsChange(
+            $current,
+            $changes,
+            function (string $encrypted): string {
+                try {
+                    return $this->cipher->decrypt($encrypted);
+                } catch (\RuntimeException) {
+                    return '';
+                }
+            },
+            $this->assertNothingOpen(...),
+        );
         $update = $changes;
-        unset($update['secretKey'], $update['webhookSecret'], $update['mollieApiKey']);
+        $switches = ['testMode'];
+        $updates = [];
+        // Columns of the record itself, which the form passes along.
+        $known = ['id', 'tstamp', 'testMode'];
 
-        foreach (array_keys(self::SWITCHES) as $field) {
+        foreach ($this->sections as $section) {
+            $known = [...$known, ...array_keys($section->switches()), ...array_keys($section->secrets()), ...$section->values()];
+        }
+        // Every column belongs to a provider section; anything else could be a secret of
+        // a provider whose section is missing and must not be stored as submitted.
+        if ([] !== ($unknown = array_diff(array_keys($changes), $known))) {
+            throw new \LogicException('Payment settings without provider section: '.implode(', ', $unknown));
+        }
+
+        foreach ($this->sections as $section) {
+            foreach (array_keys($section->secrets()) as $field) {
+                unset($update[$field]);
+            }
+            $switches = [...$switches, ...array_keys($section->switches())];
+            // Every section validates before anything is stored.
+            $updates[] = [$section, $section->apply($change)];
+        }
+
+        foreach ($switches as $field) {
             if (\array_key_exists($field, $update)) {
-                $update[$field] = $switch($field) ? '1' : '';
+                $update[$field] = $change->switch($field) ? '1' : '';
             }
         }
-        if ($current['testMode'] !== $test || ('' !== $key && $oldKey !== $key)) {
-            foreach (['secretKey', ...self::WEBHOOK] as $field) {
-                $update[$field] = '';
+
+        foreach ($updates as [$section, $values]) {
+            foreach ($values as $field => $value) {
+                $update[$field] = \array_key_exists($field, $section->secrets()) && '' !== $value ? $this->cipher->encrypt((string) $value) : $value;
             }
-        }
-        if ($current['testMode'] !== $test) {
-            $update['mollieApiKey'] = '';
-        }
-        if ('' !== $key) {
-            $update['secretKey'] = $this->cipher->encrypt($key);
-        }
-        if ('' !== $mollie) {
-            $update['mollieApiKey'] = $this->cipher->encrypt($mollie);
-        }
-        if ('' !== $webhook) {
-            $update['webhookSecret'] = $this->cipher->encrypt($webhook);
-        }
-        $storedKey = $update['secretKey'] ?? ($current['secretKey'] ?? '');
-        $storedWebhook = $update['webhookSecret'] ?? ($current['webhookSecret'] ?? '');
-        if ($switch('stripeEnabled') && ('' === $storedKey || '' === $storedWebhook)) {
-            throw new SettingsException('stripeIncomplete', 'Stripe zunächst ausgeschaltet speichern, dann Webhook anlegen und Stripe einschalten.');
-        }
-        if ($switch('mollieEnabled') && '' === ($update['mollieApiKey'] ?? ($current['mollieApiKey'] ?? ''))) {
-            throw new SettingsException('mollieIncomplete', 'Mollie lässt sich nur mit gespeichertem API-Key einschalten.');
         }
 
         return $update;
@@ -285,8 +316,8 @@ final readonly class PaymentSettings
         }
         $this->connection->transactional(
             function () use ($url): void {
-                $data = self::fromRow($this->lockedRow());
-                $identity = hash('sha256', $url.':'.($this->testMode() ? 'test' : 'live').':'.$this->secretKey());
+                $data = self::read($this->sections, $this->lockedRow());
+                $identity = hash('sha256', $url.':'.($this->testMode() ? 'test' : 'live').':'.$this->secret('secretKey'));
                 if (isset($data['webhookIdentity']) && $data['webhookIdentity'] !== $identity) {
                     throw new \InvalidArgumentException('Webhook-Adresse oder Stripe-Konto geändert. Vorhandenen Endpunkt vor dem Wechsel prüfen.');
                 }
@@ -302,7 +333,7 @@ final readonly class PaymentSettings
     {
         $this->connection->transactional(
             function () use ($register): void {
-                $register(self::fromRow($this->lockedRow()));
+                $register(self::read($this->sections, $this->lockedRow()));
             },
         );
     }
@@ -316,37 +347,21 @@ final readonly class PaymentSettings
     }
 
     /**
+     * What is missing before payments work, from one read of the record.
+     *
      * @return list<string>
      */
     public function missing(): array
     {
-        $data = $this->stored();
+        $view = $this->view();
         $missing = [];
+        $standalone = false;
 
-        try {
-            $this->secretKey();
-            $this->webhookSecret();
-            if ($data['stripeEnabled'] && !$this->enabled('stripe')) {
-                $missing[] = 'Zahlung: Stripe-Schlüssel und Webhook-Secret ergänzen';
-            }
-        } catch (\RuntimeException) {
-            $missing[] = 'Zahlung: Stripe-Schlüssel neu eingeben';
-        } catch (\InvalidArgumentException) {
-            $missing[] = 'Zahlung: Stripe-Schlüssel oder Testmodus prüfen';
+        foreach ($this->sections as $id => $section) {
+            $missing = [...$missing, ...$section->missing($view)];
+            $standalone = $standalone || ($section->standalone() && $this->enabledIn($view, $id));
         }
-
-        try {
-            $this->mollieApiKey();
-            if ($data['mollieEnabled'] && !$this->enabled('mollie')) {
-                $missing[] = 'Zahlung: Mollie-API-Key ergänzen';
-            }
-        } catch (\RuntimeException) {
-            $missing[] = 'Zahlung: Mollie-API-Key neu eingeben';
-        } catch (\InvalidArgumentException) {
-            $missing[] = 'Zahlung: Mollie-API-Key oder Testmodus prüfen';
-        }
-
-        if ([] === $missing && !$this->enabled('bank_transfer') && !$this->enabled('stripe') && !$this->enabled('mollie')) {
+        if ([] === $missing && !$standalone) {
             $missing[] = 'Zahlung: mindestens einen Anbieter einrichten';
         }
 
@@ -362,15 +377,104 @@ final readonly class PaymentSettings
         $this->connection->executeStatement('INSERT IGNORE INTO tl_nw_payment_settings (id, tstamp) VALUES (1, 0)');
     }
 
-    private function secret(string $field, string $environment): string
+    private function view(): SettingsView
     {
-        $override = getenv($environment);
-        if (false !== $override && '' !== $override) {
-            return $override;
+        $data = $this->stored();
+        $testMode = $this->modeOf($data);
+
+        return new SettingsView($data, $testMode, fn (array $data, string $field): string => $this->decryptSecret($data, $field, $testMode));
+    }
+
+    private function enabledIn(SettingsView $view, string $provider): bool
+    {
+        try {
+            return isset($this->sections[$provider]) && $this->sections[$provider]->enabled($view);
+        } catch (\InvalidArgumentException|\RuntimeException) {
+            return false;
         }
-        $encrypted = $this->stored()[$field] ?? '';
+    }
+
+    /**
+     * @param array<string, mixed> $data stored() format
+     */
+    private function decryptSecret(array $data, string $field, bool $testMode): string
+    {
+        $section = $this->owner($field);
+        $value = $this->override($section, $field) ?? $this->decrypt($data, $field);
+        $section->checkSecret($field, $value, $testMode);
+
+        return $value;
+    }
+
+    private function owner(string $field): ProviderSettingsInterface
+    {
+        foreach ($this->sections as $section) {
+            if (\array_key_exists($field, $section->secrets())) {
+                return $section;
+            }
+        }
+
+        throw new \InvalidArgumentException('Unknown payment secret.');
+    }
+
+    /**
+     * The value of the secret's environment variable, null without one.
+     */
+    private function override(ProviderSettingsInterface $section, string $field): string|null
+    {
+        $environment = $section->secrets()[$field];
+        $override = '' === $environment ? false : getenv($environment);
+
+        return false !== $override && '' !== $override ? $override : null;
+    }
+
+    /**
+     * @param array<string, mixed> $data stored() format
+     */
+    private function decrypt(array $data, string $field): string
+    {
+        $encrypted = $data[$field] ?? '';
 
         return \is_string($encrypted) && '' !== $encrypted ? $this->cipher->decrypt($encrypted) : '';
+    }
+
+    /**
+     * @return list<ProviderSettingsInterface>
+     */
+    private static function builtIn(): array
+    {
+        return [new BankTransferSettings(), new StripeSettings(), new MollieSettings(), new OnSiteSettings()];
+    }
+
+    /**
+     * @param iterable<ProviderSettingsInterface> $sections
+     *
+     * @return array<string, ProviderSettingsInterface> provider id => section, in checkout order
+     */
+    private static function index(iterable $sections): array
+    {
+        $list = [...$sections];
+        usort($list, static fn (ProviderSettingsInterface $a, ProviderSettingsInterface $b): int => $b::priority() <=> $a::priority());
+        $indexed = [];
+
+        foreach ($list as $section) {
+            if (isset($indexed[$section::provider()])) {
+                throw new \LogicException('Two payment settings sections for provider "'.$section::provider().'".');
+            }
+            $indexed[$section::provider()] = $section;
+        }
+
+        return $indexed;
+    }
+
+    /**
+     * @param array<string, mixed> $data stored() format
+     */
+    private function modeOf(array $data): bool
+    {
+        $override = getenv('NW_PAYMENT_STRIPE_TEST_MODE');
+
+        return false !== $override && '' !== $override ? '1' === $override : (bool) $data['testMode'];
     }
 
     /**

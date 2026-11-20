@@ -4,7 +4,7 @@ services:
     autoconfigure: true
   Nordwerk\PaymentBundle\:
     resource: "../src/"
-    exclude: "../src/{Domain,ContaoManager,DependencyInjection,NordwerkPaymentBundle.php}"
+    exclude: "../src/{Domain,ContaoManager,DependencyInjection,NordwerkPaymentBundle.php,Settings/SettingsView.php,Settings/SettingsChange.php}"
   Nordwerk\PaymentBundle\Settings\SecretCipher:
     arguments:
       $appSecret: "%kernel.secret%"
@@ -14,9 +14,12 @@ services:
     alias: Nordwerk\PaymentBundle\Provider\MollieClient
   Nordwerk\PaymentBundle\Settings\PaymentSettings:
     public: true
+    arguments:
+      $sections: !tagged_iterator nordwerk.payment.provider_settings
   Nordwerk\PaymentBundle\Persistence\PaymentService:
     public: true
     arguments:
+      $providers: !tagged_iterator nordwerk.payment.provider
       $resolvers: !tagged_iterator nordwerk.payment.payable_resolver
   Nordwerk\PaymentBundle\Provider\StripeProvider:
     public: true

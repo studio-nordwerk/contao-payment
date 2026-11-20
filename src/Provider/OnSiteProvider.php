@@ -19,6 +19,31 @@ use Symfony\Component\HttpFoundation\Request;
  */
 final class OnSiteProvider implements PaymentProviderInterface
 {
+    public static function id(): string
+    {
+        return 'on_site';
+    }
+
+    public static function priority(): int
+    {
+        return 0;
+    }
+
+    public function name(): string
+    {
+        return 'Vor Ort';
+    }
+
+    public function label(): string
+    {
+        return 'Bezahlung vor Ort';
+    }
+
+    public function online(): bool
+    {
+        return false;
+    }
+
     public function createCheckout(PaymentRequest $request): CheckoutResult
     {
         return new CheckoutResult('on_site:'.$request->payment->id);

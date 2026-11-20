@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Nordwerk\PaymentBundle\Persistence;
 
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\ParameterType;
 use Nordwerk\PaymentBundle\Domain\CheckoutResult;
 use Nordwerk\PaymentBundle\Domain\Money;
 use Nordwerk\PaymentBundle\Domain\PayableResolverInterface;
@@ -14,38 +16,58 @@ use Nordwerk\PaymentBundle\Domain\PaymentProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentRequest;
 use Nordwerk\PaymentBundle\Domain\PaymentSnapshotProviderInterface;
 use Nordwerk\PaymentBundle\Domain\PaymentStatus;
+use Nordwerk\PaymentBundle\Domain\PolledProviderInterface;
+use Nordwerk\PaymentBundle\Domain\RefundReconcilerInterface;
 use Nordwerk\PaymentBundle\Domain\RefundRejectedException;
 use Nordwerk\PaymentBundle\Domain\RefundResult;
 use Nordwerk\PaymentBundle\Domain\RefundStatus;
 use Nordwerk\PaymentBundle\Domain\ResumableCheckoutInterface;
-use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
-use Nordwerk\PaymentBundle\Provider\MollieProvider;
-use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
-use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Psr\Log\LoggerInterface;
 
+/**
+ * Payments independent of the provider. Providers are services implementing
+ * PaymentProviderInterface; consumers only use their ids, names and labels.
+ */
 final readonly class PaymentService
 {
     /**
+     * @var array<string, PaymentProviderInterface> id => provider, in checkout order
+     */
+    private array $providers;
+
+    /**
+     * @param iterable<PaymentProviderInterface> $providers
      * @param iterable<PayableResolverInterface> $resolvers
      */
     public function __construct(
         private Connection $connection,
         private PaymentRepository $repository,
-        private BankTransferProvider $bank,
-        private StripeProvider $stripe,
         private PaymentSettings $settings,
+        iterable $providers,
         private iterable $resolvers,
         private LoggerInterface $logger,
-        private OnSiteProvider $onSite = new OnSiteProvider(),
-        private MollieProvider|null $mollie = null,
     ) {
+        $list = [];
+
+        foreach ($providers as $provider) {
+            $list[] = $provider;
+        }
+        usort($list, static fn (PaymentProviderInterface $a, PaymentProviderInterface $b): int => $b::priority() <=> $a::priority());
+        $indexed = [];
+
+        foreach ($list as $provider) {
+            if (isset($indexed[$provider::id()])) {
+                throw new \LogicException('Two payment providers with the id "'.$provider::id().'".');
+            }
+            $indexed[$provider::id()] = $provider;
+        }
+        $this->providers = $indexed;
     }
 
     /**
-     * Payment on site is listed last; consumers offer it only where the customer
-     * comes by, e.g. for pickup.
+     * Enabled payment methods with their checkout label. Payment on site is listed
+     * last; consumers offer it only where the customer comes by, e.g. for pickup.
      *
      * @return array<string, string>
      */
@@ -53,24 +75,44 @@ final readonly class PaymentService
     {
         $methods = [];
 
-        foreach (['bank_transfer' => 'Vorkasse per Überweisung', 'stripe' => 'Online bezahlen (Stripe)', 'mollie' => 'Online bezahlen (Mollie)', 'on_site' => 'Bezahlung vor Ort'] as $id => $label) {
+        foreach ($this->providers as $id => $provider) {
             if ($this->settings->enabled($id)) {
-                $methods[$id] = $label;
+                $methods[$id] = $provider->label();
             }
         }
 
         return $methods;
     }
 
+    /**
+     * Short name of a provider for mails and the backend ("Mollie"); the id itself if
+     * the provider is not installed (any more).
+     */
+    public function name(string $provider): string
+    {
+        return isset($this->providers[$provider]) ? $this->providers[$provider]->name() : $provider;
+    }
+
+    /**
+     * Whether payments of this provider move through an online provider (see
+     * PaymentProviderInterface::online()); false for unknown ids.
+     */
+    public function online(string $provider): bool
+    {
+        return isset($this->providers[$provider]) && $this->providers[$provider]->online();
+    }
+
+    /**
+     * Whether payments of this provider are confirmed by hand (advance payment, on site).
+     */
+    public function manual(string $provider): bool
+    {
+        return isset($this->providers[$provider]) && !$this->providers[$provider]->online();
+    }
+
     public function provider(string $provider): PaymentProviderInterface
     {
-        return match ($provider) {
-            'bank_transfer' => $this->bank,
-            'stripe' => $this->stripe,
-            'mollie' => $this->mollie ?? throw new \InvalidArgumentException('Unknown payment provider.'),
-            'on_site' => $this->onSite,
-            default => throw new \InvalidArgumentException('Unknown payment provider.'),
-        };
+        return $this->providers[$provider] ?? throw new \InvalidArgumentException('Unknown payment provider.');
     }
 
     public function start(string $type, string $id, Money $money, string $provider, string $origin, string $description): CheckoutResult
@@ -90,7 +132,7 @@ final readonly class PaymentService
                 // One payment per payable: a payment of the other mode must not be reused (a
                 // paid test payment would count as paid in live mode), and none is created next
                 // to it.
-                if (\in_array($provider, ['stripe', 'mollie'], true) && $payment->testMode !== $this->settings->testMode()) {
+                if ($this->online($provider) && $payment->testMode !== $this->settings->testMode()) {
                     throw new \InvalidArgumentException('Die vorhandene Zahlung wurde im '.($payment->testMode ? 'Test' : 'Live').'modus angelegt und passt nicht zum aktuellen Modus. Bitte eine neue Zahlung für diesen Bezug anlegen lassen.');
                 }
                 if (PaymentStatus::Open !== $payment->status) {
@@ -168,7 +210,7 @@ final readonly class PaymentService
     public function confirmManual(int $id): void
     {
         $payment = $this->repository->find($id);
-        if (!\in_array($payment->provider, ['bank_transfer', 'on_site'], true)) {
+        if (!$this->manual($payment->provider)) {
             throw new \InvalidArgumentException('Nur Vorkasse und Bezahlung vor Ort können manuell bestätigt werden.');
         }
         $this->apply($payment->provider, new PaymentEvent('manual:paid:'.$id, $id, $payment->reference, PaymentStatus::Paid, $payment->money, testMode: $payment->testMode));
@@ -180,8 +222,8 @@ final readonly class PaymentService
             throw new \InvalidArgumentException('Invalid refund operation.');
         }
 
-        if ($this->connection->isTransactionActive() && \in_array($this->repository->find($id)->provider, ['stripe', 'mollie'], true)) {
-            throw new \LogicException('Stripe and Mollie refunds require an independently committed operation.');
+        if ($this->connection->isTransactionActive() && $this->online($this->repository->find($id)->provider)) {
+            throw new \LogicException('Refunds of online providers require an independently committed operation.');
         }
 
         // Read before the transaction: a plain read inside it would fix the snapshot,
@@ -194,7 +236,7 @@ final readonly class PaymentService
                 $payment = $this->repository->find($id, true);
                 // The key of the other mode no longer exists, so such a payment cannot be
                 // refunded here.
-                if (\in_array($payment->provider, ['stripe', 'mollie'], true) && $payment->testMode !== $testMode) {
+                if ($this->online($payment->provider) && $payment->testMode !== $testMode) {
                     throw new \InvalidArgumentException('Die Zahlung wurde im '.($payment->testMode ? 'Test' : 'Live').'modus angelegt; im aktuellen Modus lässt sie sich nicht erstatten. Erstattung im Dashboard des Anbieters oder nach Rückkehr in den früheren Modus.');
                 }
                 $existing = $this->connection->fetchAssociative('SELECT * FROM tl_nw_payment_refund WHERE operation_token = ? FOR UPDATE', [$operation]);
@@ -257,7 +299,10 @@ final readonly class PaymentService
 
     public function reconcile(): void
     {
-        $refunds = $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider IN ('stripe', 'mollie') AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.checked_at, r.id LIMIT 100");
+        // A reservation without a provider reference is retried with refund(); one with
+        // a reference is read again through RefundReconcilerInterface.
+        $online = $this->providerIds(static fn (PaymentProviderInterface $provider): bool => $provider->online());
+        $refunds = [] === $online ? [] : $this->connection->fetchAllAssociative("SELECT r.* FROM tl_nw_payment_refund r INNER JOIN tl_nw_payment p ON p.id = r.payment_id WHERE p.provider IN (?) AND r.succeeded = 0 AND r.status IN ('pending', 'requires_action') ORDER BY r.checked_at, r.id LIMIT 100", [$online], [ArrayParameterType::STRING]);
 
         foreach ($refunds as $refund) {
             try {
@@ -269,17 +314,18 @@ final readonly class PaymentService
                 } else {
                     $payment = $this->repository->find((int) $refund['payment_id']);
                     $eventId = 'refund-fetch:'.$refund['id'].':'.bin2hex(random_bytes(16));
-                    $event = 'mollie' === $payment->provider
-                        ? ($this->mollie ?? throw new \LogicException('Mollie is not available.'))->refundEvent($eventId, $payment, (string) $refund['provider_reference'], (int) $refund['amount'], (string) $refund['operation_token'])
-                        : $this->stripe->refundEvent($eventId, (string) $refund['provider_reference']);
-                    $this->apply($payment->provider, $event);
+                    $provider = $this->provider($payment->provider);
+                    if (!$provider instanceof RefundReconcilerInterface) {
+                        throw new \LogicException('Provider cannot reconcile refunds.');
+                    }
+                    $this->apply($payment->provider, $provider->refundEvent($eventId, $payment, (string) $refund['provider_reference'], (int) $refund['amount'], (string) $refund['operation_token']));
                 }
             } catch (\Throwable $exception) {
                 $this->logger->error('Refund reconciliation deferred.', ['payment_id' => (int) $refund['payment_id'], 'failure_type' => $exception::class]);
             }
         }
 
-        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE status IN ('open', 'pending') AND created_at < ? AND provider_reference <> '' AND provider NOT IN ('bank_transfer', 'on_site') ORDER BY checked_at, id LIMIT 100", [time() - 600]);
+        $ids = [] === $online ? [] : $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE status IN ('open', 'pending') AND created_at < ? AND provider_reference <> '' AND provider IN (?) ORDER BY checked_at, id LIMIT 100", [time() - 600, $online], [ParameterType::INTEGER, ArrayParameterType::STRING]);
 
         foreach ($ids as $id) {
             try {
@@ -296,18 +342,19 @@ final readonly class PaymentService
             }
         }
 
-        $this->reconcileMolliePaid();
+        $this->reconcilePolledPaid();
     }
 
     /**
-     * Mollie payments that are still open or pending are read from the API when the
-     * customer returns, so shops without a reachable webhook (local, behind a
-     * firewall) do not wait for the cron. The state comes from Mollie, never from the
-     * browser; at most every five seconds per payment.
+     * Payments of polled providers (Mollie) that are still open or pending are read
+     * from the API when the customer returns, so shops without a reachable webhook
+     * (local, behind a firewall) do not wait for the cron. The state comes from the
+     * provider, never from the browser; at most every five seconds per payment.
      */
     public function refreshFromProvider(Payment $payment): Payment
     {
-        if ('mollie' !== $payment->provider || null === $this->mollie || '' === $payment->reference || !\in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true)) {
+        $provider = $this->providers[$payment->provider] ?? null;
+        if (!$provider instanceof PolledProviderInterface || '' === $payment->reference || !\in_array($payment->status, [PaymentStatus::Open, PaymentStatus::Pending], true)) {
             return $payment;
         }
         $now = time();
@@ -317,9 +364,9 @@ final readonly class PaymentService
         }
 
         try {
-            $this->apply('mollie', $this->mollie->fetchSnapshot($payment));
+            $this->apply($payment->provider, $provider->fetchSnapshot($payment));
         } catch (\Throwable $exception) {
-            $this->logger->error('Mollie status check on return deferred.', ['payment_id' => $payment->id, 'failure_type' => $exception::class]);
+            $this->logger->error('Status check on return deferred.', ['payment_id' => $payment->id, 'provider' => $payment->provider, 'failure_type' => $exception::class]);
 
             return $payment;
         }
@@ -328,17 +375,19 @@ final readonly class PaymentService
     }
 
     /**
-     * Mollie confirms the cumulative refunded amount itself: an adopted refund may be
-     * one of several, and refunds from the dashboard are not in our own sum. Stripe,
-     * and Mollie if it cannot be asked right now, use the sum from the reservation.
+     * Polled providers (Mollie) confirm the cumulative refunded amount themselves: an
+     * adopted refund may be one of several, and refunds from the dashboard are not in
+     * our own sum. The others, and polled ones that cannot be asked right now, use
+     * the sum from the reservation.
      */
     private function succeededRefundEvent(Payment $payment, RefundResult $result, int $total): PaymentEvent
     {
-        if ('mollie' === $payment->provider && null !== $this->mollie) {
+        $provider = $this->providers[$payment->provider] ?? null;
+        if ($provider instanceof PolledProviderInterface) {
             try {
-                return $this->mollie->fetchSnapshot($payment);
+                return $provider->fetchSnapshot($payment);
             } catch (\Throwable $exception) {
-                $this->logger->error('Mollie refund total could not be confirmed.', ['payment_id' => $payment->id, 'failure_type' => $exception::class]);
+                $this->logger->error('Refund total could not be confirmed.', ['payment_id' => $payment->id, 'provider' => $payment->provider, 'failure_type' => $exception::class]);
             }
         }
 
@@ -346,25 +395,40 @@ final readonly class PaymentService
     }
 
     /**
-     * Refunds made in the Mollie dashboard arrive without a webhook when none is
-     * reachable. A small rotating set of paid Mollie payments is therefore read again
-     * from time to time.
+     * Refunds made in the dashboard of a polled provider (Mollie) arrive without a
+     * webhook when none is reachable. A small rotating set of their paid payments is
+     * therefore read again from time to time.
      */
-    private function reconcileMolliePaid(): void
+    private function reconcilePolledPaid(): void
     {
-        if (null === $this->mollie) {
+        $polled = $this->providerIds(static fn (PaymentProviderInterface $provider): bool => $provider instanceof PolledProviderInterface);
+        if ([] === $polled) {
             return;
         }
-        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE provider = 'mollie' AND status IN ('paid', 'partially_refunded') AND provider_reference <> '' AND test_mode = ? AND created_at > ? AND checked_at < ? ORDER BY checked_at, id LIMIT 20", [$this->settings->testMode() ? 1 : 0, time() - 180 * 86400, time() - 600]);
+        $ids = $this->connection->fetchFirstColumn("SELECT id FROM tl_nw_payment WHERE provider IN (?) AND status IN ('paid', 'partially_refunded') AND provider_reference <> '' AND test_mode = ? AND created_at > ? AND checked_at < ? ORDER BY checked_at, id LIMIT 20", [$polled, $this->settings->testMode() ? 1 : 0, time() - 180 * 86400, time() - 600], [ArrayParameterType::STRING, ParameterType::INTEGER, ParameterType::INTEGER, ParameterType::INTEGER]);
 
         foreach ($ids as $id) {
             try {
                 $this->connection->update('tl_nw_payment', ['checked_at' => time()], ['id' => (int) $id]);
-                $this->apply('mollie', $this->mollie->fetchSnapshot($this->repository->find((int) $id)));
+                $payment = $this->repository->find((int) $id);
+                $provider = $this->provider($payment->provider);
+                if ($provider instanceof PolledProviderInterface) {
+                    $this->apply($payment->provider, $provider->fetchSnapshot($payment));
+                }
             } catch (\Throwable $exception) {
-                $this->logger->error('Mollie refund check deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
+                $this->logger->error('Refund check of a paid payment deferred.', ['payment_id' => (int) $id, 'failure_type' => $exception::class]);
             }
         }
+    }
+
+    /**
+     * @param \Closure(PaymentProviderInterface): bool $filter
+     *
+     * @return list<string>
+     */
+    private function providerIds(\Closure $filter): array
+    {
+        return array_keys(array_filter($this->providers, $filter));
     }
 
     /**

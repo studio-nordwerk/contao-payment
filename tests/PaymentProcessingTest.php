@@ -15,6 +15,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Persistence\PaymentRepository;
 use Nordwerk\PaymentBundle\Persistence\PaymentService;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
+use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeClientInterface;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -47,7 +48,7 @@ final class PaymentProcessingTest extends TestCase
         $client = $this->createMock(StripeClientInterface::class);
         $this->stripe = new StripeProvider($client, $this->settings);
         $this->resolver = new RecordingResolver();
-        $this->service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), $this->stripe, $this->settings, [$this->resolver], new NullLogger());
+        $this->service = new PaymentService($this->db, $this->repository, $this->settings, [new BankTransferProvider(), $this->stripe, new OnSiteProvider()], [$this->resolver], new NullLogger());
     }
 
     protected function tearDown(): void
@@ -75,7 +76,7 @@ final class PaymentProcessingTest extends TestCase
             ;
             $stripe = new StripeProvider($client, $this->settings);
             $this->assertSame($expected, $stripe->fetchSnapshot($payment)->status);
-            $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), $stripe, $this->settings, [], new NullLogger());
+            $service = new PaymentService($this->db, $this->repository, $this->settings, [new BankTransferProvider(), $stripe, new OnSiteProvider()], [], new NullLogger());
             $service->reconcile();
             $this->assertSame($expected, $this->repository->find($payment->id)->status);
         }
@@ -214,7 +215,7 @@ final class PaymentProcessingTest extends TestCase
                 },
             )
         ;
-        $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($client, $this->settings), $this->settings, [$this->resolver], new NullLogger());
+        $service = new PaymentService($this->db, $this->repository, $this->settings, [new BankTransferProvider(), new StripeProvider($client, $this->settings), new OnSiteProvider()], [$this->resolver], new NullLogger());
         $payable = bin2hex(random_bytes(8));
         $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');
         $payment = $this->repository->forPayable('fixture', $payable);
@@ -266,7 +267,7 @@ final class PaymentProcessingTest extends TestCase
                 },
             )
         ;
-        $service = new PaymentService($this->db, $this->repository, new BankTransferProvider(), new StripeProvider($client, $this->settings), $this->settings, [], new NullLogger());
+        $service = new PaymentService($this->db, $this->repository, $this->settings, [new BankTransferProvider(), new StripeProvider($client, $this->settings), new OnSiteProvider()], [], new NullLogger());
         $payable = bin2hex(random_bytes(8));
         $first = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');
         $retry = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Fixture');

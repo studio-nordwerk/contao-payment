@@ -35,7 +35,7 @@ final class PaymentsModule extends BackendModule
                 $id = (int) Input::post('payment');
                 if ('confirm' === Input::post('action')) {
                     $service->confirmManual($id);
-                    $notice = 'Vorkasse bestätigt.';
+                    $notice = 'Zahlung bestätigt.';
                 } else {
                     $raw = Input::post('amount');
                     $operation = Input::post('operation');
@@ -50,6 +50,14 @@ final class PaymentsModule extends BackendModule
                 $error = $exception instanceof \InvalidArgumentException ? $exception->getMessage() : 'Zahlungsaktion fehlgeschlagen. Bitte erneut prüfen.';
             }
         }
-        $this->Template->setData(['payments' => $repository->recent(), 'events' => $connection->fetchAllAssociative('SELECT * FROM tl_nw_payment_event ORDER BY id DESC LIMIT 100'), 'error' => $error, 'notice' => $notice]);
+        $payments = $repository->recent();
+        $names = [];
+        $manual = [];
+
+        foreach ($payments as $payment) {
+            $names[$payment->provider] = $service->name($payment->provider);
+            $manual[$payment->provider] = $service->manual($payment->provider);
+        }
+        $this->Template->setData(['payments' => $payments, 'providerNames' => $names, 'manual' => $manual, 'events' => $connection->fetchAllAssociative('SELECT * FROM tl_nw_payment_event ORDER BY id DESC LIMIT 100'), 'error' => $error, 'notice' => $notice]);
     }
 }

@@ -11,6 +11,7 @@ use Nordwerk\PaymentBundle\Domain\PaymentStatus;
 use Nordwerk\PaymentBundle\Persistence\PaymentRepository;
 use Nordwerk\PaymentBundle\Persistence\PaymentService;
 use Nordwerk\PaymentBundle\Provider\BankTransferProvider;
+use Nordwerk\PaymentBundle\Provider\OnSiteProvider;
 use Nordwerk\PaymentBundle\Provider\StripeClient;
 use Nordwerk\PaymentBundle\Provider\StripeProvider;
 use Nordwerk\PaymentBundle\Settings\PaymentSettings;
@@ -30,7 +31,7 @@ final class DurableRefundTest extends TestCase
         $settings = new PaymentSettings($db, new SecretCipher((string) getenv('APP_SECRET')));
         $settings->save(true, true, true, 'sk_test_local_fixture', 'whsec_local_fixture');
         $repository = new PaymentRepository($db);
-        $service = new PaymentService($db, $repository, new BankTransferProvider(), new StripeProvider(new StripeClient($settings), $settings), $settings, [], new NullLogger());
+        $service = new PaymentService($db, $repository, $settings, [new BankTransferProvider(), new StripeProvider(new StripeClient($settings), $settings), new OnSiteProvider()], [], new NullLogger());
         $base = (string) getenv('NW_PAYMENT_STRIPE_API_BASE');
         $payments = [];
 
@@ -86,7 +87,7 @@ final class DurableRefundTest extends TestCase
         $settings->save(true, true, true, 'sk_test_local_fixture', 'whsec_local_fixture');
         $repository = new PaymentRepository($db);
         $stripe = new StripeProvider(new StripeClient($settings), $settings);
-        $service = new PaymentService($db, $repository, new BankTransferProvider(), $stripe, $settings, [], new NullLogger());
+        $service = new PaymentService($db, $repository, $settings, [new BankTransferProvider(), $stripe, new OnSiteProvider()], [], new NullLogger());
         $payable = 'timeout-'.bin2hex(random_bytes(8));
         $checkout = $service->start('fixture', $payable, new Money(1000), 'stripe', 'https://example.test', 'Timeout fixture');
         $payment = $repository->forPayable('fixture', $payable);
