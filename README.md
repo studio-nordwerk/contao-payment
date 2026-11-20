@@ -102,3 +102,7 @@ Library: [chillerlan/php-qrcode](https://github.com/chillerlan/php-qrcode/tree/v
 Decided 2026-09-30: a full refund does not automatically cancel fulfillment. A withdrawal is
 reviewed by the merchant before a refund; failed/expired payments are not automatically
 restarted (new payment links belong to P4).
+
+## Fehler und Wünsche
+
+Bitte als Issue in [studio-nordwerk/contao-pakete](https://github.com/studio-nordwerk/contao-pakete/issues) melden. Der Quellcode auf GitHub ist ein schreibgeschützter Spiegel; entwickelt wird das Paket intern bei Studio Nordwerk, Pull Requests dort werden nicht übernommen.

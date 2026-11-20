@@ -1,0 +1,20 @@
+name: Pull requests
+# Dieses Repository ist ein schreibgeschützter Spiegel des internen Monorepos von Studio Nordwerk.
+# Pull Requests werden mit einem Hinweis auf contao-pakete geschlossen (läuft im Kontext des Spiegels,
+# ohne fremden Code auszuchecken).
+on:
+  pull_request_target:
+    types: [opened, reopened]
+permissions:
+  pull-requests: write
+jobs:
+  close:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr close "$NUMBER" --repo "$GITHUB_REPOSITORY" --comment "Danke für den Vorschlag! Dieses Repository ist ein schreibgeschützter Spiegel; entwickelt wird das Paket intern bei Studio Nordwerk. Bitte beschreib die Änderung als Issue in https://github.com/studio-nordwerk/contao-pakete/issues, wir übernehmen sie von dort.
+
+          Thanks for the suggestion! This repository is a read-only mirror; the package is developed internally at Studio Nordwerk. Please open an issue at https://github.com/studio-nordwerk/contao-pakete/issues and we will take it from there."
