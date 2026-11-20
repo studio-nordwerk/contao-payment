@@ -16,7 +16,8 @@ use Nordwerk\PaymentBundle\Settings\PaymentSettings;
 use Nordwerk\PaymentBundle\Settings\SecretCipher;
 use Psr\Log\NullLogger;
 
-require __DIR__.'/../../app/vendor/autoload.php';
+// The test runs from the development installation (apps/payment), like PHPUnit itself.
+require getcwd().'/app/vendor/autoload.php';
 $parts = parse_url((string) getenv('DATABASE_URL'));
 if (!is_array($parts)) {
     throw new RuntimeException('Invalid fixture database URL.');
