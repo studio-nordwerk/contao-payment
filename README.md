@@ -1,10 +1,10 @@
 # Contao-Zahlungen
 
-`nordwerk/contao-payment-bundle` für PHP 8.3 und Contao ab 5.7.12. Anbieterneutrale Zahlungsnaht mit Vorkasse, gehostetem Stripe Checkout, gehostetem Mollie Checkout und Bezahlung vor Ort. Kartendaten bleiben bei Stripe bzw. Mollie. Der Mini-Shop nutzt das Bundle; Seminar folgt in P2.
+`nordwerk/contao-payment-bundle` für PHP 8.3 und Contao ab 5.7.12. Anbieterneutrale Zahlungsnaht mit Vorkasse, gehostetem Stripe Checkout, gehostetem Mollie Checkout und Bezahlung vor Ort. Kartendaten bleiben bei Stripe bzw. Mollie.
 
 ## Installation und Einrichtung
 
-Das Paket im Contao Manager gemeinsam mit dem Mini-Shop installieren oder über Composer einbinden. Solange noch kein Remote besteht, ein Composer-Path-Repository auf dieses Verzeichnis verwenden. `make artifact VERSION=1.0.0-dev` erstellt ein Manager-ZIP mit einem Composer-Manifest im Archivwurzelverzeichnis. Es werden keine Tags oder Remotes angelegt.
+Das Paket über den Contao Manager oder mit `composer require nordwerk/contao-payment-bundle` installieren und anschließend die Datenbankmigration ausführen.
 
 Unter **Inhalte → Zahlung einrichten** (ein normaler, versionierter Contao-Datensatz im Standard-Bearbeitungsformular) Vorkasse, Stripe und/oder Mollie einschalten. Vorkasse ist voreingestellt. Für Stripe zuerst den Testmodus wählen, den passenden Test-Schlüssel eintragen und mit ausgeschaltetem Stripe speichern. Danach **Webhook bei Stripe anlegen** ausführen. Das zurückgegebene Webhook-Secret wird verschlüsselt gespeichert. Danach Stripe einschalten und speichern. Alternativ ein bereits vorhandenes Webhook-Secret eintragen. Beim Wechsel auf Live: ausstehende Testzahlungen und Zustellungen zunächst abschließen, Stripe ausschalten, Live-Modus und Live-Schlüssel speichern, Live-Webhook anlegen und anschließend Stripe einschalten. Wiederholte Webhook-Anlage verwendet denselben Endpunkt samt Secret weiter; eine geänderte Webhook-Adresse muss vor einem Wechsel geprüft werden. Für Livebetrieb benötigt die Website HTTPS und einen öffentlich erreichbaren Webhook.
 
@@ -53,35 +53,11 @@ Mollie nimmt die Zahlung auf der gehosteten Mollie-Seite entgegen. Der Kunde wä
 
 **Erstattung:** **Erstatten** legt über die API eine Mollie-Erstattung an (Idempotency-Key aus der Operations-ID, Wiederholung erzeugt keine zweite). Mollie führt Erstattungen teils verzögert aus (`queued`, `pending`, `processing`); sie bleiben dann ausstehend und blockieren weitere Erstattungen, bis Webhook oder Cron das Ergebnis abgleichen. Fehlgeschlagene oder abgebrochene Erstattungen geben den Betrag wieder frei. Lehnt Mollie eine Erstattung endgültig ab (HTTP 4xx), wird sie mit Grund als fehlgeschlagen gespeichert und blockiert nichts. Eindeutig abgelehnt sind nur klare Client-Fehler (zum Beispiel 422); 409 („wird noch verarbeitet“), 5xx und Zeitüberschreitungen lassen die Operation offen. Ist der Ausgang unklar (Antwort verloren), sendet das Bundle nie blind erneut: Es liest erst die Erstattungen der Zahlung und übernimmt die mit passendem `operation_token`; ist die Liste nicht lesbar (auch eine Antwort ohne Erstattungsfeld), bleibt die Operation zur Prüfung stehen. Eine bei Mollie abgebrochene Erstattung, die dort nicht mehr abrufbar ist, gibt den Betrag frei, sobald die vollständige Erstattungsliste sie als abgebrochen zeigt oder nicht mehr enthält. Erstattungen für Zahlungen eines anderen Modus werden abgelehnt. Der Cron arbeitet offene Erstattungen reihum nach letzter Prüfung ab.
 
-**Grenzen:** Rückbuchungen (Chargebacks), Abonnements, Mollie-Bestellungen, Teilzahlungen und Währungen ohne Nachkommastellen (JPY, ISK) werden nicht abgebildet. Eine Rückbuchung zeigt sich nur im Mollie-Dashboard. Die Statusmaschine kennt kein Zurück von „abgelaufen“ oder „fehlgeschlagen“: Bezahlt der Kunde eine bei Mollie abgelaufene Zahlung nicht mehr, bleibt ein neuer Versuch P4. Ein echter Mollie-Testlauf mit öffentlicher HTTPS-Adresse wurde noch nicht durchgeführt.
-
-## Lokale Prüfung ohne Stripe- und Mollie-Netz
-
-Docker: PHP 8.3-FPM, Caddy auf 8084, MariaDB auf tmpfs, Mailpit auf 8029, Fake-Stripe auf 8095 und Fake-Mollie auf 8096. `.env.example` nach `.env` kopieren und zufällige lokale Administrator-Zugangsdaten sowie APP_SECRET setzen. Die Datenbank wird bei `make reset` verworfen.
-
-```sh
-make reset
-make check
-make artifact VERSION=1.0.0-dev
-```
-
-Playwright wird mit `vp` betrieben. Läuft auf dem Rechner bereits ein anderer Stack auf 8084 oder 8029, lassen sich die Host-Ports in einer unversionierten `compose.override.yaml` ändern (`ports: !override`); der Browser-Test liest die Adresse dann aus `PAYMENT_BASE_URL`. `make check` prüft Paketexport, ECS, Twig-CS-Fixer, Composer, Container, PHPStan, PHPUnit und Browserabläufe. Die CI erzeugt lokale Zugangsdaten und korrigiert nach dem Reset die Schreibrechte für PHP-FPM.
-
-`docker/fake-stripe/server.py` ist ein lokaler HTTP-Stub im Compose-Netz. Er nimmt Checkout Sessions und Erstattungen an, zeigt **Bezahlen**, **Abbrechen** und **Session ablaufen lassen** und sendet signierte Events. Die Strings mit `local_fixture` sind ausschließlich öffentliche Testdaten. Der Shop nutzt einen eigenen Stub auf 8094. `docker/fake-mollie/server.py` ist das Gegenstück für Mollie: Zahlungen und Erstattungen anlegen und abrufen, Checkout-Seite mit **Bezahlen**, **Abbrechen** und **Ablaufen lassen** (ruft eine übergebene Webhook-Adresse per Formular-POST auf), `POST /_fixture/refund-mode` mit `{"mode": "pending"}` lässt Erstattungen ausstehend bleiben. Er akzeptiert nur `test_…`-Schlüssel (`test_local_fixture`). Es werden keine echten Stripe- oder Mollie-Schlüssel benötigt. Screenshots liegen unter `test-results/screenshots/`.
-
-## Optional: echter Stripe-Testmodus
-
-Für einen ausdrücklich manuell gestarteten Smoke-Test einen Schlüssel über `STRIPE_TEST_SECRET_KEY` in die Prozessumgebung injizieren; ihn nicht in Shell-Historie, Dateien oder Ausgaben schreiben. Der folgende Aufruf erzeugt eine echte **Testmodus**-Session und gibt nur deren gehostete Test-URL aus:
-
-```sh
-docker compose exec -T -e STRIPE_TEST_SECRET_KEY php php /workspace/scripts/stripe-test.php
-```
-
-Der CLI-Smoke-Test umgeht den lokalen Stub. Für einen vollständigen Browser-Test `NW_PAYMENT_STRIPE_API_BASE` im Compose-PHP-Service leer setzen, die Installation über eine öffentliche HTTPS-Testadresse bereitstellen, Testmodus und Test-Schlüssel im Backend speichern und dort den Webhook anlegen. Anschließend den Shop-Kauf, asynchrone Zahlarten und Erstattung im Stripe-Testkonto prüfen. Es wurden hier keine externen Testzahlungen angelegt.
+**Grenzen:** Rückbuchungen (Chargebacks), Abonnements, Mollie-Bestellungen, Teilzahlungen und Währungen ohne Nachkommastellen (JPY, ISK) werden nicht abgebildet. Eine Rückbuchung zeigt sich nur im Mollie-Dashboard. Die Statusmaschine kennt kein Zurück von „abgelaufen“ oder „fehlgeschlagen“: Bezahlt der Kunde eine bei Mollie abgelaufene Zahlung nicht mehr, ist eine neue Bestellung oder manuelle Klärung nötig.
 
 ## Grenzen und offene Entscheidungen
 
-Das Paket speichert je Bezug zunächst einen Zahlvorgang; zusätzliche Bezahllinks/Versuche sind P4. Eine Rückkehr nach Abbruch bleibt offen, bis Stripe Ablauf oder Zahlung bestätigt. Eine vollständige Zahlungserstattung setzt den Shop-Bestellstatus nicht automatisch auf storniert und löst keinen automatischen Widerruf aus. Die Verknüpfung erfolgt über Zahlungs-ID und Bestellnummer.
+Das Paket speichert je Bezug zunächst einen Zahlvorgang. Eine Rückkehr nach Abbruch bleibt offen, bis Stripe Ablauf oder Zahlung bestätigt. Eine vollständige Zahlungserstattung setzt den Shop-Bestellstatus nicht automatisch auf storniert und löst keinen automatischen Widerruf aus. Die Verknüpfung erfolgt über Zahlungs-ID und Bestellnummer.
 
 Teilerstattungen bei einem Steuersatz erzeugen einen Storno-Beleg mit kumulativer Cent-Rundung; bei mehreren Steuersätzen ist eine fachliche Positionszuordnung erforderlich. Solche Erstattungen werden im Shop als „Steuerzuordnung erforderlich“ angezeigt. Die offene Produktentscheidung steht in [docs/roadmap.md](docs/roadmap.md). Zahlungsregeln: [docs/rules.md](docs/rules.md).
 
@@ -98,10 +74,6 @@ makes no network requests. Consumers embed PNG bytes in MIME messages and PDFs.
 
 Specification: [European Payments Council EPC069-12](https://www.europeanpaymentscouncil.eu/document-library/guidance-documents/quick-response-code-guidelines-enable-data-capture-initiation).
 Library: [chillerlan/php-qrcode](https://github.com/chillerlan/php-qrcode/tree/v5.0.x).
-
-Decided 2026-09-30: a full refund does not automatically cancel fulfillment. A withdrawal is
-reviewed by the merchant before a refund; failed/expired payments are not automatically
-restarted (new payment links belong to P4).
 
 ## Fehler und Wünsche
 
